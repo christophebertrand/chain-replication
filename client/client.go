@@ -15,6 +15,8 @@ import (
 
 var in *bufio.Reader
 var out io.Writer
+var put = "PUT"
+var get = "GET"
 
 type httphandler struct {
 }
@@ -53,18 +55,27 @@ func main() {
 	}()
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		key, value, addr := askInput(reader)
-		req, _ := http.NewRequest("PUT", addr+"/"+key+"/"+value, bytes.NewBufferString(returnAddr))
-		client := &http.Client{}
-		client.Do(req)
+		method, key, value, destAddr := askInput(reader)
+		if method == put {
+			req, _ := http.NewRequest("PUT", destAddr+"/"+key+"/"+value, bytes.NewBufferString(returnAddr))
+			client := &http.Client{}
+			client.Do(req)
+		} else {
+			http.Get(destAddr + "/" + key)
+		}
 	}
 }
 
-func askInput(reader *bufio.Reader) (key, value, addr string) {
+func askInput(reader *bufio.Reader) (method, key, value, destAddr string) {
+	method = Input(put, "Enter method")
 	key = Inputf("my-key", "Please enter the key")
-	value = Inputf("value1", "Please enter the new value")
-	port := Inputf("12380", "Please enter kv store port")
-	addr = "http://127.0.0.1:" + port
+	if method == put {
+		value = Inputf("value1", "Please enter the new value")
+	} else {
+		value = ""
+	}
+	destPort := Inputf("12380", "Please enter kv store port")
+	destAddr = "http://127.0.0.1:" + destPort
 	return
 }
 
