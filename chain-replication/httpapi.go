@@ -15,7 +15,6 @@
 package main
 
 import (
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -47,7 +46,6 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed on PUT", http.StatusBadRequest)
 				return
 			}
-			fmt.Println(key, string(value), string(retAddr))
 			h.store.Propose(key, string(value), string(retAddr))
 		}
 

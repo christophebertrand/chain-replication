@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -104,7 +103,7 @@ func (s *kvstore) readCommits(commitC <-chan *string, errorC <-chan error) {
 			continue
 		}
 		message := decodeMessage(bytes.NewBufferString(*data))
-		fmt.Println("new message recieved " + message.Key + " " + message.Val.Val)
+		log.Println("new message recieved " + message.Key + " " + message.Val.Val)
 
 		if s.isNewMessage(message) {
 			s.mu.Lock()
@@ -128,7 +127,7 @@ func httpSend(urlStr string, body io.Reader) {
 	client := &http.Client{}
 	_, err := client.Do(req)
 	if err != nil {
-		fmt.Println(err)
+		log.Println("could not connect to " + urlStr)
 	}
 }
 
