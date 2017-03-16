@@ -28,7 +28,7 @@ import (
 
 // a key-value store backed by raft
 type kvstore struct {
-	proposeC    chan<- string // channel for proposing updates
+	proposeC    chan<- message // channel for proposing updates
 	mu          sync.RWMutex
 	kvStore     map[string]value // current committed key-value pairs
 	snapshotter *snap.Snapshotter
@@ -50,7 +50,7 @@ type value struct {
 	MessageID int
 }
 
-func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- string, commitC <-chan *string,
+func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message,
 	errorC <-chan error, successor string, ID int) *kvstore {
 	s := &kvstore{proposeC: proposeC, kvStore: make(map[string]value), snapshotter: snapshotter, successor: successor}
 	// replay log into key-value map
@@ -68,11 +68,10 @@ func (s *kvstore) Lookup(key string) (string, bool) {
 	return v.Val, ok
 }
 
-func (s *kvstore) Propagate(data io.Reader) {
+func (s *kvstore) Propagate(data []byte) {
 	message := decodeMessage(data)
 	if s.isNewMessage(message) {
-		buf := encodeMessage(message)
-		s.proposeC <- string(buf.Bytes())
+		s.proposeC <- message
 	}
 }
 
@@ -80,11 +79,10 @@ func (s *kvstore) Propagate(data io.Reader) {
 func (s *kvstore) Propose(k string, v string, retAddr string) {
 	messageID++
 	message := message{retAddr, k, value{v, id, messageID}}
-	buf := encodeMessage(message)
-	s.proposeC <- string(buf.Bytes())
+	s.proposeC <- message
 }
 
-func (s *kvstore) readCommits(commitC <-chan *string, errorC <-chan error) {
+func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 	for data := range commitC {
 		if data == nil {
 			// done replaying log; new data incoming
@@ -102,7 +100,7 @@ func (s *kvstore) readCommits(commitC <-chan *string, errorC <-chan error) {
 			}
 			continue
 		}
-		message := decodeMessage(bytes.NewBufferString(*data))
+		message := *data
 		log.Println("new message recieved " + message.Key + " " + message.Val.Val)
 
 		if s.isNewMessage(message) {
@@ -113,7 +111,7 @@ func (s *kvstore) readCommits(commitC <-chan *string, errorC <-chan error) {
 				httpSend(message.RetAddr, bytes.NewBufferString("ok"))
 			} else {
 				buf := encodeMessage(message)
-				httpSend(s.successor, &buf)
+				httpSend(s.successor, bytes.NewBuffer(buf))
 			}
 		}
 	}
@@ -148,21 +146,22 @@ func (s *kvstore) recoverFromSnapshot(snapshot []byte) error {
 	return nil
 }
 
-func decodeMessage(r io.Reader) message {
+func decodeMessage(b []byte) message {
 	var message message
-	dec := gob.NewDecoder(r)
+	buf := bytes.NewBuffer(b)
+	dec := gob.NewDecoder(buf)
 	if err := dec.Decode(&message); err != nil {
 		log.Fatalf("raftexample: could not decode message (%v)", err)
 	}
 	return message
 }
 
-func encodeMessage(message message) bytes.Buffer {
+func encodeMessage(message message) []byte {
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(message); err != nil {
 		log.Fatal(err)
 	}
-	return buf
+	return buf.Bytes()
 }
 
 func (s *kvstore) isNewMessage(message message) bool {

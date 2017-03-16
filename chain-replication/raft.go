@@ -38,9 +38,9 @@ import (
 
 // A key-value stream backed by raft
 type raftNode struct {
-	proposeC    <-chan string            // proposed messages (k,v)
+	proposeC    <-chan message           // proposed messages (k,v)
 	confChangeC <-chan raftpb.ConfChange // proposed cluster config changes
-	commitC     chan<- *string           // entries committed to log (k,v)
+	commitC     chan<- *message          // entries committed to log (k,v)
 	errorC      chan<- error             // errors from raft session
 
 	id          int // client ID for raft session
@@ -79,10 +79,10 @@ var defaultSnapCount uint64 = 10000
 // commit channel, followed by a nil message (to indicate the channel is
 // current), then new log entries. To shutdown, close proposeC and read errorC.
 func newRaftNode(id int, clusterID int, peers []string, join bool,
-	getSnapshot func() ([]byte, error), proposeC <-chan string,
-	confChangeC <-chan raftpb.ConfChange) (<-chan *string, <-chan error, <-chan *snap.Snapshotter) {
+	getSnapshot func() ([]byte, error), proposeC <-chan message,
+	confChangeC <-chan raftpb.ConfChange) (<-chan *message, <-chan error, <-chan *snap.Snapshotter) {
 
-	commitC := make(chan *string)
+	commitC := make(chan *message)
 	errorC := make(chan error)
 
 	rc := &raftNode{
@@ -147,9 +147,10 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 				// ignore empty messages
 				break
 			}
-			s := string(ents[i].Data)
+			// s := string(ents[i].Data)
+			m := decodeMessage(ents[i].Data)
 			select {
-			case rc.commitC <- &s:
+			case rc.commitC <- &m:
 			case <-rc.stopc:
 				return false
 			}
@@ -402,8 +403,9 @@ func (rc *raftNode) serveChannels() {
 				if !ok {
 					rc.proposeC = nil
 				} else {
+					bytes := encodeMessage(prop)
 					// blocks until accepted by raft state machine
-					rc.node.Propose(context.TODO(), []byte(prop))
+					rc.node.Propose(context.TODO(), bytes)
 				}
 
 			case cc, ok := <-rc.confChangeC:

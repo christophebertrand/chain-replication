@@ -38,7 +38,7 @@ func main() {
 		succesors := strings.Split(*succ, ",")
 		succesor = succesors[*id%3]
 	}
-	proposeC := make(chan string)
+	proposeC := make(chan message)
 	defer close(proposeC)
 	confChangeC := make(chan raftpb.ConfChange)
 	defer close(confChangeC)

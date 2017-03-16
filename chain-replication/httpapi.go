@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -37,7 +38,10 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		split := strings.Split(key, "/")
 		key = split[1]
 		if key == "" {
-			h.store.Propagate(r.Body)
+			buf := new(bytes.Buffer)
+			buf.ReadFrom(r.Body)
+			b := buf.Bytes()
+			h.store.Propagate(b)
 		} else {
 			value := split[2]
 			retAddr, err := ioutil.ReadAll(r.Body)
