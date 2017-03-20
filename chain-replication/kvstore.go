@@ -35,8 +35,7 @@ type kvstore struct {
 	successor   string
 }
 
-var messageID = 0
-var id = 0
+var messageID uint
 
 type message struct {
 	RetAddr string
@@ -46,8 +45,7 @@ type message struct {
 
 type value struct {
 	Val       string
-	NodeID    int
-	MessageID int
+	MessageID uint64
 }
 
 func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message,
@@ -55,7 +53,6 @@ func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC 
 	s := &kvstore{proposeC: proposeC, kvStore: make(map[string]value), snapshotter: snapshotter, successor: successor}
 	// replay log into key-value map
 	s.readCommits(commitC, errorC)
-	id = ID
 	// read commits from raft into kvStore map until error
 	go s.readCommits(commitC, errorC)
 	return s
@@ -78,7 +75,7 @@ func (s *kvstore) Propagate(data []byte) {
 //Propose sends a new message to the raft layer
 func (s *kvstore) Propose(k string, v string, retAddr string) {
 	messageID++
-	message := message{retAddr, k, value{v, id, messageID}}
+	message := message{retAddr, k, value{Val: v}}
 	s.proposeC <- message
 }
 
@@ -101,7 +98,7 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			continue
 		}
 		message := *data
-		log.Println("new message recieved " + message.Key + " " + message.Val.Val)
+		log.Println("new message recieved "+message.Key+" "+message.Val.Val+" and ID ", message.Val.MessageID)
 
 		if s.isNewMessage(message) {
 			s.mu.Lock()
@@ -151,7 +148,7 @@ func decodeMessage(b []byte) message {
 	buf := bytes.NewBuffer(b)
 	dec := gob.NewDecoder(buf)
 	if err := dec.Decode(&message); err != nil {
-		log.Fatalf("raftexample: could not decode message (%v)", err)
+		log.Fatalf("kvstore: could not decode message (%v)", err)
 	}
 	return message
 }
@@ -167,9 +164,9 @@ func encodeMessage(message message) []byte {
 func (s *kvstore) isNewMessage(message message) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	value := s.kvStore[message.Key]
+	oldValue := s.kvStore[message.Key]
 	//check if message has already been delivere once
-	if value.NodeID != message.Val.NodeID || value.MessageID != message.Val.MessageID {
+	if oldValue.MessageID < message.Val.MessageID {
 		return true
 	}
 	return false

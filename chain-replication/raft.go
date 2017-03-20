@@ -149,6 +149,9 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			}
 			// s := string(ents[i].Data)
 			m := decodeMessage(ents[i].Data)
+			if m.Val.MessageID == 0 {
+				m.Val.MessageID = ents[i].Index
+			}
 			select {
 			case rc.commitC <- &m:
 			case <-rc.stopc:
