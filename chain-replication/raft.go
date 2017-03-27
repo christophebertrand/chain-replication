@@ -241,6 +241,19 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	}
 	rc.raftStorage.SetHardState(st)
 
+	//set replay to true
+	for i := range ents {
+		switch ents[i].Type {
+		case raftpb.EntryNormal:
+			if len(ents[i].Data) == 0 {
+				// ignore empty messages
+				break
+			}
+			m := decodeMessage(ents[i].Data)
+			m.Replay = true
+			ents[i].Data = encodeMessage(m)
+		}
+	}
 	// append to storage so raft starts at the right place in log
 	rc.raftStorage.Append(ents)
 	// send nil once lastIndex is published so client knows commit channel is current

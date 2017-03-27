@@ -24,4 +24,5 @@ _testmain.go
 *.prof
 
 chain-replication/persist/*
+chain-replication/simplified-chain/persist/*
 TODO

@@ -23,6 +23,7 @@ type httphandler struct {
 
 func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := r.RequestURI
+	id = strings.TrimPrefix(id, "/")
 	switch {
 	case r.Method == "PUT":
 		v, err := ioutil.ReadAll(r.Body)
@@ -32,7 +33,7 @@ func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		fmt.Println(id, string(v))
+		fmt.Print(string(v))
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 
@@ -56,13 +57,27 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		method, key, value, destAddr := askInput(reader)
-		if method == put {
-			req, _ := http.NewRequest("PUT", destAddr+"/"+key+"/"+value, bytes.NewBufferString(returnAddr))
-			client := &http.Client{}
-			client.Do(req)
-		} else {
-			http.Get(destAddr + "/" + key)
+		sendRequest(method, key, value, destAddr, returnAddr)
+	}
+}
+
+func sendRequest(method, key, value, destAddr, returnAddr string) {
+	if method == put {
+		req, _ := http.NewRequest("PUT", destAddr+"/"+key+"/"+value, bytes.NewBufferString(returnAddr))
+		client := &http.Client{}
+		client.Do(req)
+	} else {
+		resp, err := http.Get(destAddr + "/" + key)
+		if err != nil {
+			log.Fatalf("could not GET the value", err)
 		}
+		v, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Failed to read on get (%v)\n", err)
+			return
+		}
+		fmt.Println(key + " has value: " + string(v))
+
 	}
 }
 
@@ -74,7 +89,7 @@ func askInput(reader *bufio.Reader) (method, key, value, destAddr string) {
 	} else {
 		value = ""
 	}
-	destPort := Inputf("12380", "Please enter kv store port")
+	destPort := Inputf("11380", "Please enter kv store port")
 	destAddr = "http://127.0.0.1:" + destPort
 	return
 }

@@ -36,7 +36,7 @@ func main() {
 	if *succ != "-1" {
 		succesor = *pred //TODO REMOVE PRED FLAG
 		succesors := strings.Split(*succ, ",")
-		succesor = succesors[*id%3]
+		succesor = succesors[*id-1]
 	}
 	proposeC := make(chan message)
 	defer close(proposeC)
@@ -50,7 +50,7 @@ func main() {
 		*join, getSnapshot, proposeC, confChangeC)
 
 	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, succesor, *id)
-
+	fmt.Println("returned from kv")
 	// the key-value http handler will propose updates to raft
 	serveHTTPKVAPI(kvs, *kvport, confChangeC, errorC)
 }

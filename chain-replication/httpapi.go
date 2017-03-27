@@ -33,17 +33,21 @@ type httpKVAPI struct {
 
 func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := r.RequestURI
+	key = strings.TrimPrefix(key, "/")
 	switch {
 	case r.Method == "PUT":
+		// PUT method has:
+		//-RequestURI = "key/value" and body = "returnAddr"  if it is a new message
+		//-RequestURI = "" 					 and body = "message" 		if it is a PUTSucc
 		split := strings.Split(key, "/")
-		key = split[1]
+		key = split[0]
 		if key == "" {
 			buf := new(bytes.Buffer)
 			buf.ReadFrom(r.Body)
 			b := buf.Bytes()
 			h.store.Propagate(b)
 		} else {
-			value := split[2]
+			value := split[1]
 			retAddr, err := ioutil.ReadAll(r.Body)
 			if err != nil {
 				log.Printf("Failed to read on PUT (%v)\n", err)
@@ -52,7 +56,6 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			h.store.Propose(key, string(value), string(retAddr))
 		}
-
 		// Optimistic-- no waiting for ack from raft. Value is not yet
 		// committed so a subsequent GET on the key may return old value
 		w.WriteHeader(http.StatusNoContent)

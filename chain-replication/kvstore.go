@@ -18,9 +18,11 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"github.com/coreos/etcd/snap"
@@ -41,6 +43,7 @@ type message struct {
 	RetAddr string
 	Key     string
 	Val     value
+	Replay  bool
 }
 
 type value struct {
@@ -75,7 +78,7 @@ func (s *kvstore) Propagate(data []byte) {
 //Propose sends a new message to the raft layer
 func (s *kvstore) Propose(k string, v string, retAddr string) {
 	messageID++
-	message := message{retAddr, k, value{Val: v}}
+	message := message{retAddr, k, value{Val: v}, false}
 	s.proposeC <- message
 }
 
@@ -98,17 +101,19 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			continue
 		}
 		message := *data
-		log.Println("new message recieved "+message.Key+" "+message.Val.Val+" and ID ", message.Val.MessageID)
+		log.Println("new message recieved "+message.Key+" "+message.Val.Val+" and ID "+strconv.Itoa(int(message.Val.MessageID))+" and replay =", message.Replay)
 
 		if s.isNewMessage(message) {
 			s.mu.Lock()
 			s.kvStore[message.Key] = message.Val
 			s.mu.Unlock()
 			if s.successor == "-1" {
-				httpSend(message.RetAddr, bytes.NewBufferString("ok"))
+				if !message.Replay {
+					httpSend(message.RetAddr, bytes.NewBufferString("ok"))
+				}
 			} else {
 				buf := encodeMessage(message)
-				httpSend(s.successor, bytes.NewBuffer(buf))
+				go httpSend(s.successor, bytes.NewBuffer(buf))
 			}
 		}
 	}
@@ -119,10 +124,15 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 
 func httpSend(urlStr string, body io.Reader) {
 	req, _ := http.NewRequest("PUT", urlStr, body)
+	// time.Sleep(3 * time.Second)
 	client := &http.Client{}
 	_, err := client.Do(req)
 	if err != nil {
+		// log.Println(body)
+		log.Println(err)
 		log.Println("could not connect to " + urlStr)
+	} else {
+		fmt.Println("succesfully delivered")
 	}
 }
 
