@@ -50,7 +50,6 @@ func main() {
 		*join, getSnapshot, proposeC, confChangeC)
 
 	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, succesor, *id)
-	fmt.Println("returned from kv")
 	// the key-value http handler will propose updates to raft
 	serveHTTPKVAPI(kvs, *kvport, confChangeC, errorC)
 }

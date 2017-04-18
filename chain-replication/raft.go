@@ -36,6 +36,8 @@ import (
 	"golang.org/x/net/context"
 )
 
+var lastIndex uint64
+
 // A key-value stream backed by raft
 type raftNode struct {
 	proposeC    <-chan message           // proposed messages (k,v)
@@ -137,6 +139,8 @@ func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 	return
 }
 
+var startingIndex uint64 = 5
+
 // publishEntries writes committed log entries to commit channel and returns
 // whether all entries could be published.
 func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
@@ -150,6 +154,14 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			// s := string(ents[i].Data)
 			m := decodeMessage(ents[i].Data)
 			if m.Val.MessageID == 0 {
+				// if ents[i].Index != startingIndex {
+				// 	log.Fatalf("gap in index got " + strconv.Itoa(int(ents[i].Index)) + " expected " + strconv.Itoa(int(startingIndex)))
+				// }
+				startingIndex++
+				if ents[i].Index <= lastIndex {
+					log.Fatalf("index not monotonicaly incresing")
+				}
+				lastIndex = ents[i].Index
 				m.Val.MessageID = ents[i].Index
 			}
 			select {
@@ -168,6 +180,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 					rc.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
 				}
 			case raftpb.ConfChangeRemoveNode:
+
 				if cc.NodeID == uint64(rc.id) {
 					log.Println("I've been removed from the cluster! Shutting down.")
 					return false

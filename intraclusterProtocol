@@ -1,0 +1,45 @@
+type message{ID, content, retAddr}
+
+Vars:
+  - ToDeliver: Set[message]
+  - delivered:  Set[message]
+  - activePeers: Set[server]
+
+Event RaftDeliver(msg: message)
+  if msg not in delivered:
+    toDeliver += msg
+    resp := responsible(msg, activePeers)
+    if resp == self:
+      clientSend(msg)
+
+Event <'delivered', msg, from>
+  activePeers += from
+  toDeliver -= msg
+  delivered += msg
+
+Event <'timeout', p: peer>
+  activePeers -= p
+  for msg := range toDeliver:
+    if self == responsible(msg, activePeers):
+      clientSend(msg)
+
+Event <'predMessage', msg, pred>
+
+def clientSend(msg):
+  httpSend('ok', msg.retAddr) #possible failure here
+  delivered += msg
+  toDeliver -= msg
+  broadcast('delivered', msg)
+
+
+def succSend(msg, succ):
+  htttpSend(msg, succ)
+
+def responsible(msg, activePeers):
+  r := msg.ID % len(activePeers)
+  sorted := sort(activePeers)
+  return sorted[r].ID
+
+def crashRecovery:
+  ToDeliver, delivered = askPeer for their state
+# optimization maybe possible with msg IDs to reduced delivered, ID are not continuous

@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -101,7 +100,7 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			continue
 		}
 		message := *data
-		log.Println("new message recieved "+message.Key+" "+message.Val.Val+" and ID "+strconv.Itoa(int(message.Val.MessageID))+" and replay =", message.Replay)
+		// log.Println("new message recieved "+message.Key+" "+message.Val.Val+" and ID "+strconv.Itoa(int(message.Val.MessageID))+" and replay =", message.Replay)
 
 		if s.isNewMessage(message) {
 			s.mu.Lock()
@@ -109,7 +108,7 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			s.mu.Unlock()
 			if s.successor == "-1" {
 				if !message.Replay {
-					httpSend(message.RetAddr, bytes.NewBufferString("ok"))
+					httpSend(message.RetAddr+"/"+strconv.Itoa((int(message.Val.MessageID)))+"_"+message.Val.Val, bytes.NewBufferString(strconv.Itoa((int(message.Val.MessageID)))))
 				}
 			} else {
 				buf := encodeMessage(message)
@@ -132,7 +131,7 @@ func httpSend(urlStr string, body io.Reader) {
 		log.Println(err)
 		log.Println("could not connect to " + urlStr)
 	} else {
-		fmt.Println("succesfully delivered")
+		// fmt.Println("succesfully delivered")
 	}
 }
 
