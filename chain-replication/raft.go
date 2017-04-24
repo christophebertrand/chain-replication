@@ -71,6 +71,8 @@ type raftNode struct {
 	stopc     chan struct{} // signals proposal channel closed
 	httpstopc chan struct{} // signals http server to shutdown
 	httpdonec chan struct{} // signals http server shutdown complete
+
+	first bool //is true iff the node is in the first cluster
 }
 
 var defaultSnapCount uint64 = 10000
@@ -80,9 +82,15 @@ var defaultSnapCount uint64 = 10000
 // provided the proposal channel. All log entries are replayed over the
 // commit channel, followed by a nil message (to indicate the channel is
 // current), then new log entries. To shutdown, close proposeC and read errorC.
-func newRaftNode(id int, clusterID int, peers []string, join bool,
-	getSnapshot func() ([]byte, error), proposeC <-chan message,
-	confChangeC <-chan raftpb.ConfChange) (<-chan *message, <-chan error, <-chan *snap.Snapshotter) {
+func newRaftNode(
+	id int,
+	clusterID int,
+	peers []string,
+	join bool,
+	getSnapshot func() ([]byte, error),
+	proposeC <-chan message,
+	confChangeC <-chan raftpb.ConfChange,
+	first bool) (<-chan *message, <-chan error, <-chan *snap.Snapshotter) {
 
 	commitC := make(chan *message)
 	errorC := make(chan error)
@@ -106,6 +114,8 @@ func newRaftNode(id int, clusterID int, peers []string, join bool,
 
 		snapshotterReady: make(chan *snap.Snapshotter, 1),
 		// rest of structure populated after WAL replay
+
+		first: first,
 	}
 	go rc.startRaft()
 	return commitC, errorC, rc.snapshotterReady
@@ -139,8 +149,6 @@ func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 	return
 }
 
-var startingIndex uint64 = 5
-
 // publishEntries writes committed log entries to commit channel and returns
 // whether all entries could be published.
 func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
@@ -151,15 +159,19 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 				// ignore empty messages
 				break
 			}
-			// s := string(ents[i].Data)
 			m := decodeMessage(ents[i].Data)
+			//messages that have no ID
 			if m.Val.MessageID == 0 {
-				// if ents[i].Index != startingIndex {
-				// 	log.Fatalf("gap in index got " + strconv.Itoa(int(ents[i].Index)) + " expected " + strconv.Itoa(int(startingIndex)))
-				// }
-				startingIndex++
-				if ents[i].Index <= lastIndex {
-					log.Fatalf("index not monotonicaly incresing")
+				//add dummy messages to make messageIDs continuous
+				if rc.first {
+					for j := lastIndex; j < ents[i].Index; j++ {
+						dummy := message{DummyMessage, "", "", value{"", j}, true}
+						select {
+						case rc.commitC <- &dummy:
+						case <-rc.stopc:
+							return false
+						}
+					}
 				}
 				lastIndex = ents[i].Index
 				m.Val.MessageID = ents[i].Index
@@ -263,6 +275,7 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 				break
 			}
 			m := decodeMessage(ents[i].Data)
+			fmt.Println("replaying message " + m.String())
 			m.Replay = true
 			ents[i].Data = encodeMessage(m)
 		}
@@ -384,6 +397,7 @@ func (rc *raftNode) maybeTriggerSnapshot() {
 	}
 
 	log.Printf("start snapshot [applied index: %d | last snapshot index: %d]", rc.appliedIndex, rc.snapshotIndex)
+	//gets the data from the kvstore
 	data, err := rc.getSnapshot()
 	if err != nil {
 		log.Panic(err)

@@ -19,37 +19,52 @@ import (
 	"fmt"
 	"strings"
 
+	"strconv"
+
 	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/dedis/onet/log"
 )
 
 func main() {
 	fmt.Print("starting new raft node")
-	cluster := flag.String("cluster", "http://127.0.0.1:9021", "comma separated cluster peers")
+	raftClusterString := flag.String("raftCluster", "http://127.0.0.1:9021", "comma separated cluster raft peers")
+	clusterString := flag.String("cluster", "http://127.0.0.1:9021", "comma separated cluster peers")
 	id := flag.Int("id", 1, "node ID")
 	clusterID := flag.Int("clusterID", 0x1000, "culuster ID")
-	pred := flag.String("pred", "-1", "comma separated cluster predecessor peers")
+	pred := flag.String("pred", "-1", "comma separated cluster predecessor peers") //TODO are preds needed?
 	succ := flag.String("succ", "-1", "comma separated cluster successor peers")
-	kvport := flag.Int("port", 9121, "key-value server port")
+	//kvport := flag.Int("port", 9121, "key-value server port")
 	join := flag.Bool("join", false, "join an existing cluster")
 	flag.Parse()
-	succesor := "-1"
+	raftCluster := strings.Split(*raftClusterString, ",")
+	cluster := strings.Split(*clusterString, ",")
+	var successors []string
 	if *succ != "-1" {
-		succesor = *pred //TODO REMOVE PRED FLAG
-		succesors := strings.Split(*succ, ",")
-		succesor = succesors[*id-1]
+		successors = strings.Split(*succ, ",")
+	}
+	fmt.Println(cluster)
+	first := false
+	if *pred == "-1" {
+		first = true
 	}
 	proposeC := make(chan message)
 	defer close(proposeC)
 	confChangeC := make(chan raftpb.ConfChange)
 	defer close(confChangeC)
+	sendMessageC := make(chan message)
+	defer close(sendMessageC)
 
 	// raft provides a commit stream for the proposals from the http api
 	var kvs *kvstore
 	getSnapshot := func() ([]byte, error) { return kvs.getSnapshot() }
-	commitC, errorC, snapshotterReady := newRaftNode(*id, *clusterID, strings.Split(*cluster, ","),
-		*join, getSnapshot, proposeC, confChangeC)
-
-	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, succesor, *id)
+	commitC, errorC, snapshotterReady := newRaftNode(*id, *clusterID, raftCluster, *join, getSnapshot, proposeC, confChangeC, first)
+	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, sendMessageC)
+	node := newClusterNode(kvs, sendMessageC, confChangeC, successors, 10, cluster, *id-1)
 	// the key-value http handler will propose updates to raft
-	serveHTTPKVAPI(kvs, *kvport, confChangeC, errorC)
+	fmt.Println(cluster)
+	port, err := strconv.ParseInt(strings.Split(cluster[*id-1], ":")[2], 10, 32)
+	if err != nil {
+		log.Fatal("could not parse port")
+	}
+	node.serveHTTPKV(int(port), errorC)
 }

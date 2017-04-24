@@ -1,8 +1,8 @@
 # Use goreman to run `go get github.com/mattn/goreman`
 
-raft7: chain-replication --id 1 --clusterID 0x1003 --cluster http://127.0.0.1:31379 --port 31380 --pred ttp://127.0.0.1:21380
-raft4: chain-replication --id 1 --clusterID 0x1002 --cluster http://127.0.0.1:21379 --port 21380 --succ http://127.0.0.1:31380 --pred http://127.0.0.1:11380
-raft1: chain-replication --id 1 --clusterID 0x1001 --cluster http://127.0.0.1:11379 --port 11380 --succ http://127.0.0.1:21380
+raft1: chain-replication --id 1 --clusterID 0x1001 --raftCluster http://127.0.0.1:11379 --cluster http://127.0.0.1:11380 --succ http://127.0.0.1:21380
+raft4: chain-replication --id 1 --clusterID 0x1002 --raftCluster http://127.0.0.1:21379 --cluster http://127.0.0.1:21380 --succ http://127.0.0.1:31380, --pred http://127.0.0.1:11380
+raft7: chain-replication --id 1 --clusterID 0x1003 --raftCluster http://127.0.0.1:31379 --cluster http://127.0.0.1:31380 --pred ttp://127.0.0.1:21380
 
 
 #curl -L http://127.0.0.1:32380/my-key

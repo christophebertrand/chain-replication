@@ -1,24 +1,26 @@
 type message{ID, content, retAddr}
-
-Vars:
+type peer{active, address}
+Vars: done
   - ToDeliver: Set[message]
-  - delivered:  Set[message]
-  - activePeers: Set[peer]
+  - delivered:  Map[peer]Set[message]
+  - Peers: []peer
+  - activePeers: int
 
-Event <'RaftDeliver', msg>
+Event <'RaftDeliver', msg> done
   if msg not in delivered:
     toDeliver += msg
     resp := responsible(msg, activePeers)
     if resp == self:
       sendToClient(msg)
 
-Event <'delivered', msg, from>
+Event <'delivered', msg, from> done
   activePeers += from
   toDeliver -= msg
   delivered += msg
 
+#timeouts comme from raft
 Event <'timeout', p: peer>
-  activePeers -= p
+  activePeers -= 1
   for msg := range toDeliver:
     if self == responsible(msg, activePeers):
       sendToClient(msg)
@@ -26,18 +28,17 @@ Event <'timeout', p: peer>
 Periodically send heartbeat or piggyback on raft.
 
 
-def sendToClient(msg):
+def sendToClient(msg): done //TODO exponential backoff
   httpSend('ok', msg.retAddr) #possible failure here
   delivered += msg
   toDeliver -= msg
   broadcast('delivered', msg)
 
-def responsible(msg, activePeers):
-  r := msg.ID % len(activePeers)
-  sorted := sort(activePeers)
-  return sorted[r].ID
+def responsible(msg, activePeers): done
+  r := msg.ID % activePeers
+  return r'th active peer in Peers
 
 def crashRecovery:
-  ToDeliver, delivered = askPeer for their state
+    read ToDeliver, delivered from
+#  ToDeliver, delivered = askPeer for their state
 
-# optimization maybe possible with msg IDs to reduced delivered, ID are not continuous

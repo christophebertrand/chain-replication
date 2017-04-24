@@ -18,31 +18,58 @@ import (
 	"bytes"
 	"encoding/gob"
 	"encoding/json"
-	"io"
 	"log"
-	"net/http"
 	"strconv"
 	"sync"
+
+	"fmt"
 
 	"github.com/coreos/etcd/snap"
 )
 
 // a key-value store backed by raft
 type kvstore struct {
-	proposeC    chan<- message // channel for proposing updates
-	mu          sync.RWMutex
-	kvStore     map[string]value // current committed key-value pairs
-	snapshotter *snap.Snapshotter
-	successor   string
+	proposeC     chan<- message // channel for proposing updates
+	mu           sync.RWMutex
+	kvStore      map[string]value // current committed key-value pairs
+	snapshotter  *snap.Snapshotter
+	successor    string
+	sendMessageC chan<- message // channel for sending commited messages to httpAPI
+	//earliestUnreceived uint64
+	//received map[uint64]struct{}
 }
 
-var messageID uint
+type MessageType int32
+
+const (
+	NormalMessage MessageType = 0
+	DummyMessage  MessageType = 1
+)
 
 type message struct {
+	MsgType MessageType
 	RetAddr string
 	Key     string
 	Val     value
 	Replay  bool
+}
+
+func (m *message) ID() uint64 {
+	return m.Val.MessageID
+}
+
+func (m message) String() string {
+	var repl string
+	id := strconv.Itoa(int(m.ID()))
+	if m.Replay {
+		repl = "true"
+	} else {
+		repl = "false"
+	}
+	if m.MsgType == 0 {
+		return "MessageID: " + id + " key/value: " + m.Key + "/" + m.Val.Val + " Replay " + repl
+	}
+	return "MessageID: " + id + " dummy"
 }
 
 type value struct {
@@ -50,9 +77,15 @@ type value struct {
 	MessageID uint64
 }
 
-func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message,
-	errorC <-chan error, successor string, ID int) *kvstore {
-	s := &kvstore{proposeC: proposeC, kvStore: make(map[string]value), snapshotter: snapshotter, successor: successor}
+func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message, errorC <-chan error, sendMessageC chan<- message) *kvstore {
+	s := &kvstore{
+		proposeC:     proposeC,
+		kvStore:      make(map[string]value),
+		snapshotter:  snapshotter,
+		sendMessageC: sendMessageC,
+		//earliestUnreceived: 0,
+		//received:           make(map[uint64]struct{}),
+	}
 	// replay log into key-value map
 	s.readCommits(commitC, errorC)
 	// read commits from raft into kvStore map until error
@@ -69,6 +102,7 @@ func (s *kvstore) Lookup(key string) (string, bool) {
 
 func (s *kvstore) Propagate(data []byte) {
 	message := decodeMessage(data)
+	fmt.Println("I am progagating message " + message.String())
 	if s.isNewMessage(message) {
 		s.proposeC <- message
 	}
@@ -76,8 +110,7 @@ func (s *kvstore) Propagate(data []byte) {
 
 //Propose sends a new message to the raft layer
 func (s *kvstore) Propose(k string, v string, retAddr string) {
-	messageID++
-	message := message{retAddr, k, value{Val: v}, false}
+	message := message{NormalMessage, retAddr, k, value{Val: v}, false}
 	s.proposeC <- message
 }
 
@@ -100,38 +133,18 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			continue
 		}
 		message := *data
-		// log.Println("new message recieved "+message.Key+" "+message.Val.Val+" and ID "+strconv.Itoa(int(message.Val.MessageID))+" and replay =", message.Replay)
 
 		if s.isNewMessage(message) {
-			s.mu.Lock()
-			s.kvStore[message.Key] = message.Val
-			s.mu.Unlock()
-			if s.successor == "-1" {
-				if !message.Replay {
-					httpSend(message.RetAddr+"/"+strconv.Itoa((int(message.Val.MessageID)))+"_"+message.Val.Val, bytes.NewBufferString(strconv.Itoa((int(message.Val.MessageID)))))
-				}
-			} else {
-				buf := encodeMessage(message)
-				go httpSend(s.successor, bytes.NewBuffer(buf))
+			if message.MsgType == NormalMessage {
+				s.mu.Lock()
+				s.kvStore[message.Key] = message.Val
+				s.mu.Unlock()
 			}
+			s.sendMessageC <- message
 		}
 	}
 	if err, ok := <-errorC; ok {
 		log.Fatal(err)
-	}
-}
-
-func httpSend(urlStr string, body io.Reader) {
-	req, _ := http.NewRequest("PUT", urlStr, body)
-	// time.Sleep(3 * time.Second)
-	client := &http.Client{}
-	_, err := client.Do(req)
-	if err != nil {
-		// log.Println(body)
-		log.Println(err)
-		log.Println("could not connect to " + urlStr)
-	} else {
-		// fmt.Println("succesfully delivered")
 	}
 }
 
@@ -171,10 +184,13 @@ func encodeMessage(message message) []byte {
 }
 
 func (s *kvstore) isNewMessage(message message) bool {
+	if message.MsgType == DummyMessage {
+		return true
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	oldValue := s.kvStore[message.Key]
-	//check if message has already been delivere once
+	//check if message has already been delivered once
 	if oldValue.MessageID < message.Val.MessageID {
 		return true
 	}

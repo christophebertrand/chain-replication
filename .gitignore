@@ -23,6 +23,7 @@ _testmain.go
 *.test
 *.prof
 
-chain-replication/persist/*
-chain-replication/simplified-chain/persist/*
-TODO
+TODO.md
+.idea/
+chain-replication/persist/
+chain-replication/simplified-chain/persist/
