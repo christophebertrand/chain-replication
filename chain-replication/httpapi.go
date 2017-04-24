@@ -38,7 +38,7 @@ type clusterNode struct {
 	earliestUndelivered uint64
 	delivered           *MessageSet
 	//TODO optimize replace MessageSet by []MessageSet
-	toDeliver *MessageSet
+	toDeliver map[uint64]message
 
 	newMessage <-chan message
 	successor  string
@@ -50,9 +50,9 @@ type clusterNode struct {
 func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- raftpb.ConfChange, successors []string, maxPeers int, addresses []string, ID int) *clusterNode {
 	//TODO check implicit ordering of peers (match to ids of peers)
 	peers := make([]peer, len(addresses))
-	var sucessor string
+	var successor string //TODO successor is temporary, compute seccessor based on msgID and responsible(msgID)
 	if successors != nil {
-		sucessor = successors[0]
+		successor = successors[0]
 	}
 	for i, addr := range addresses {
 		peers[i] = peer{true, addr}
@@ -62,9 +62,9 @@ func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- r
 		confChangeC:         confChangeC,
 		earliestUndelivered: uint64(1),
 		delivered:           NewMessageSet(),
-		toDeliver:           NewMessageSet(),
+		toDeliver:           make(map[uint64]message),
 		newMessage:          newMessage,
-		successor:           sucessor,
+		successor:           successor,
 		maxPeers:            maxPeers,
 		ID:                  ID,
 		peers:               peers,
@@ -87,11 +87,10 @@ func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			buf := new(bytes.Buffer)
 			buf.ReadFrom(r.Body)
 			b := buf.Bytes()
-			msg := decodeMessage(b)
-			fmt.Println("got message from previous cluster " + msg.String())
+			// msg := decodeMessage(b)
 
 			n.store.Propagate(b)
-		} else if key == "delivered" && len(split) == 1 { // message from peer
+		} else if key == "delivered" && len(split) == 1 { // peer has delivered some messages
 			str, err := ioutil.ReadAll(r.Body)
 			if err != nil {
 				log.Printf("Failed to read on PUT (%v)\n", err)
@@ -116,7 +115,6 @@ func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Failed on PUT", http.StatusBadRequest)
 				return
 			}
-			fmt.Println("recieved new message with " + key + "/" + value + ": " + string(retAddr))
 			n.store.Propose(key, string(value), string(retAddr))
 		}
 		// Optimistic-- no waiting for ack from raft. Value is not yet
@@ -206,15 +204,15 @@ func httpPut(urlStr string, body io.Reader) (*http.Response, error) {
 //it also notifies the peers that the message has been delivered
 func (n *clusterNode) sendToClient(msg message) {
 	// returnAddr:port/msgID_Value
-	fmt.Println("I am " + strconv.Itoa(n.ID) + " and I am sending message " + msg.String())
-	retAddr := msg.RetAddr + "/" + strconv.Itoa(int(msg.ID())) + "_" + msg.Val.Val
-	body := bytes.NewBufferString(strconv.Itoa(int(msg.ID())))
+	fmt.Println("I am " + strconv.Itoa(n.ID) + " and I am sending message " + msg.String() + " to the client")
+	retAddr := msg.RetAddr + "/" + strconv.Itoa(int(msg.ID)) + "_" + msg.Val
+	body := bytes.NewBufferString(strconv.Itoa(int(msg.ID)))
 	resp, err := httpPut(retAddr, body)
 	if err != nil {
 		//TODO implement backoff
 	} else {
 		n.broadcastDelivered(msg)
-		n.messageDelivered(msg.ID(), n.earliestUndelivered)
+		n.messageDelivered(msg.ID, n.earliestUndelivered)
 
 	}
 	resp.Body.Close()
@@ -222,29 +220,19 @@ func (n *clusterNode) sendToClient(msg message) {
 
 //responsible computes which peer, among the active peers, is responsible to send the message
 func (n *clusterNode) responsible(msg message, peerLength int) int {
-	r := msg.ID() % uint64(peerLength)
+	r := msg.ID % uint64(peerLength)
 	return int(r)
-	//var p uint64
-	//for i, peer := range n.peers {
-	//	if r == p {
-	//		return i
-	//	} else if peer.active {
-	//		p++
-	//	}
-	//}
-	//return -1
 }
 
 //processMessages reads messages coming from the kvstore ( n.newMessage) and sends it to the next cluster if it exists,
 // or send an acknowledgement to the client
 func (n *clusterNode) processMessages() {
 	for msg := range n.newMessage {
-		fmt.Println("new message " + msg.String())
 
 		if n.successor == "" {
 			if !msg.Replay {
 
-				if !n.delivered.Contains(msg.ID()) {
+				if !n.delivered.Contains(msg.ID) {
 					// activePeers[i] gives use the ith active peer in n.peers
 					activePeers := make([]int, len(n.peers))
 					for i, peer := range n.peers {
@@ -253,7 +241,7 @@ func (n *clusterNode) processMessages() {
 						}
 					}
 					responsible := activePeers[n.responsible(msg, len(activePeers))]
-					n.toDeliver.Add(msg.ID())
+					n.toDeliver[msg.ID] = msg
 					if responsible == n.ID {
 						n.sendToClient(msg)
 					}
@@ -261,7 +249,6 @@ func (n *clusterNode) processMessages() {
 			}
 		} else {
 			buf := encodeMessage(msg)
-			fmt.Println("sending message to next cluster " + msg.String())
 			go httpPut(n.successor, bytes.NewBuffer(buf))
 		}
 	}
@@ -270,7 +257,7 @@ func (n *clusterNode) processMessages() {
 //broadcastDelivered send a message to all peers of the node that msg has been delivered to the next entity (cluster or client)
 func (n *clusterNode) broadcastDelivered(msg message) {
 	undeliveredS := strconv.FormatUint(n.earliestUndelivered, 10)
-	messageIDS := strconv.FormatUint(msg.ID(), 10)
+	messageIDS := strconv.FormatUint(msg.ID, 10)
 	body := bytes.NewBufferString(undeliveredS + "/" + messageIDS)
 	for _, peer := range n.peers {
 		if peer.active {
@@ -280,36 +267,9 @@ func (n *clusterNode) broadcastDelivered(msg message) {
 	}
 }
 
-////messageDelivered removes msg from the toDeliver set and adds it to delivered with compaction
-//func (n *clusterNode) messageDelivered(msg message) {
-//	n.toDeliver.Remove(msg.ID())
-//	n.addDelivered(msg)
-//}
-
-//messageDelivered removes msg from the toDeliver set and adds it to delivered with compaction
+//messageDelivered removes msg from the toDeliver s and adds it to delivered with compaction
 func (n *clusterNode) messageDelivered(msgID uint64, earliestUndelivered uint64) {
-	if earliestUndelivered > n.earliestUndelivered {
-		n.earliestUndelivered = earliestUndelivered
-	}
-	n.toDeliver.Remove(msgID)
-	n.addDelivered(msgID)
-}
-
-//addDelivered adds msg the the set of delivered messages
-func (n *clusterNode) addDelivered(msgID uint64) {
-	if msgID == n.earliestUndelivered {
-		n.earliestUndelivered++
-		maxRange := n.earliestUndelivered + uint64(n.delivered.Size())
-		for i := n.earliestUndelivered; i < maxRange; i++ {
-			if n.delivered.Contains(i) {
-				n.delivered.Remove(i)
-				n.earliestUndelivered++
-			} else {
-				return
-			}
-		}
-	} else {
-		n.delivered.Add(msgID)
-	}
-	fmt.Println(n.earliestUndelivered)
+	n.delivered.AddUntil(earliestUndelivered)
+	n.delivered.Add(msgID)
+	delete(n.toDeliver, msgID)
 }

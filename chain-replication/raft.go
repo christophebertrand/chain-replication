@@ -161,11 +161,11 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			}
 			m := decodeMessage(ents[i].Data)
 			//messages that have no ID
-			if m.Val.MessageID == 0 {
+			if m.ID == 0 {
 				//add dummy messages to make messageIDs continuous
 				if rc.first {
 					for j := lastIndex; j < ents[i].Index; j++ {
-						dummy := message{DummyMessage, "", "", value{"", j}, true}
+						dummy := message{j, DummyMessage, "", "", "", true}
 						select {
 						case rc.commitC <- &dummy:
 						case <-rc.stopc:
@@ -174,7 +174,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 					}
 				}
 				lastIndex = ents[i].Index
-				m.Val.MessageID = ents[i].Index
+				m.ID = ents[i].Index
 			}
 			select {
 			case rc.commitC <- &m:
@@ -186,19 +186,27 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			var cc raftpb.ConfChange
 			cc.Unmarshal(ents[i].Data)
 			rc.confState = *rc.node.ApplyConfChange(cc)
+			fmt.Print("confchange ")
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
+					fmt.Print(" addnode ")
+
 					rc.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
+				} else {
+					fmt.Print("other")
 				}
 			case raftpb.ConfChangeRemoveNode:
-
+				fmt.Print(" removenode ")
 				if cc.NodeID == uint64(rc.id) {
 					log.Println("I've been removed from the cluster! Shutting down.")
 					return false
 				}
 				rc.transport.RemovePeer(types.ID(cc.NodeID))
 			}
+			fmt.Println(ents[i].Index)
+		default:
+			fmt.Println(ents[i].Type)
 		}
 
 		// after commit, update appliedIndex
@@ -266,7 +274,7 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	}
 	rc.raftStorage.SetHardState(st)
 
-	//set replay to true
+	//s replay to true
 	for i := range ents {
 		switch ents[i].Type {
 		case raftpb.EntryNormal:
@@ -275,7 +283,6 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 				break
 			}
 			m := decodeMessage(ents[i].Data)
-			fmt.Println("replaying message " + m.String())
 			m.Replay = true
 			ents[i].Data = encodeMessage(m)
 		}

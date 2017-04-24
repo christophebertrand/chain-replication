@@ -7,8 +7,8 @@ import (
 )
 
 func Test_encodingMessage(t *testing.T) {
-	m1 := message{NormalMessage, "foo", "key", value{Val: "val"}, false}
-	m2 := message{DummyMessage, "", "", value{"", 1}, true}
+	m1 := message{1, NormalMessage, "foo", "key", "val", false}
+	m2 := message{1, DummyMessage, "", "", "", true}
 
 	e1 := encodeMessage(m1)
 	e2 := encodeMessage(m2)

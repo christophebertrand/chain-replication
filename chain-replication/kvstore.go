@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"sync"
 
-	"fmt"
-
 	"github.com/coreos/etcd/snap"
 )
 
@@ -31,12 +29,27 @@ import (
 type kvstore struct {
 	proposeC     chan<- message // channel for proposing updates
 	mu           sync.RWMutex
-	kvStore      map[string]value // current committed key-value pairs
+	kvStore      store // current committed key-value pairs
 	snapshotter  *snap.Snapshotter
 	successor    string
 	sendMessageC chan<- message // channel for sending commited messages to httpAPI
 	//earliestUnreceived uint64
 	//received map[uint64]struct{}
+}
+
+type store struct {
+	kv   map[string]string
+	seen *MessageSet
+	//earliestUnseen uint64
+	//seen           map[uint64]struct{}
+}
+
+func newStore() store {
+	return store{
+		kv: make(map[string]string),
+		//earliestUnseen: 0,
+		seen: NewMessageSet(),
+	}
 }
 
 type MessageType int32
@@ -47,27 +60,24 @@ const (
 )
 
 type message struct {
+	ID      uint64
 	MsgType MessageType
 	RetAddr string
 	Key     string
-	Val     value
+	Val     string
 	Replay  bool
-}
-
-func (m *message) ID() uint64 {
-	return m.Val.MessageID
 }
 
 func (m message) String() string {
 	var repl string
-	id := strconv.Itoa(int(m.ID()))
+	id := strconv.Itoa(int(m.ID))
 	if m.Replay {
 		repl = "true"
 	} else {
 		repl = "false"
 	}
 	if m.MsgType == 0 {
-		return "MessageID: " + id + " key/value: " + m.Key + "/" + m.Val.Val + " Replay " + repl
+		return "MessageID: " + id + " key/value: " + m.Key + "/" + m.Val + " Replay " + repl
 	}
 	return "MessageID: " + id + " dummy"
 }
@@ -80,7 +90,7 @@ type value struct {
 func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message, errorC <-chan error, sendMessageC chan<- message) *kvstore {
 	s := &kvstore{
 		proposeC:     proposeC,
-		kvStore:      make(map[string]value),
+		kvStore:      newStore(),
 		snapshotter:  snapshotter,
 		sendMessageC: sendMessageC,
 		//earliestUnreceived: 0,
@@ -95,14 +105,13 @@ func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC 
 
 func (s *kvstore) Lookup(key string) (string, bool) {
 	s.mu.RLock()
-	v, ok := s.kvStore[key]
+	v, ok := s.kvStore.kv[key]
 	s.mu.RUnlock()
-	return v.Val, ok
+	return v, ok
 }
 
 func (s *kvstore) Propagate(data []byte) {
 	message := decodeMessage(data)
-	fmt.Println("I am progagating message " + message.String())
 	if s.isNewMessage(message) {
 		s.proposeC <- message
 	}
@@ -110,7 +119,7 @@ func (s *kvstore) Propagate(data []byte) {
 
 //Propose sends a new message to the raft layer
 func (s *kvstore) Propose(k string, v string, retAddr string) {
-	message := message{NormalMessage, retAddr, k, value{Val: v}, false}
+	message := message{0, NormalMessage, retAddr, k, v, false}
 	s.proposeC <- message
 }
 
@@ -137,10 +146,11 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 		if s.isNewMessage(message) {
 			if message.MsgType == NormalMessage {
 				s.mu.Lock()
-				s.kvStore[message.Key] = message.Val
+				s.kvStore.kv[message.Key] = message.Val
+				s.kvStore.seen.Add(message.ID)
 				s.mu.Unlock()
+				s.sendMessageC <- message
 			}
-			s.sendMessageC <- message
 		}
 	}
 	if err, ok := <-errorC; ok {
@@ -155,7 +165,7 @@ func (s *kvstore) getSnapshot() ([]byte, error) {
 }
 
 func (s *kvstore) recoverFromSnapshot(snapshot []byte) error {
-	var store map[string]value
+	var store store
 	if err := json.Unmarshal(snapshot, &store); err != nil {
 		return err
 	}
@@ -184,15 +194,16 @@ func encodeMessage(message message) []byte {
 }
 
 func (s *kvstore) isNewMessage(message message) bool {
-	if message.MsgType == DummyMessage {
-		return true
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	oldValue := s.kvStore[message.Key]
-	//check if message has already been delivered once
-	if oldValue.MessageID < message.Val.MessageID {
-		return true
-	}
-	return false
+	return !s.kvStore.seen.Contains(message.ID)
+	//if message.MsgType == DummyMessage {
+	//	return true
+	//}
+	//oldValue := s.kvStore[message.Key]
+	////check if message has already been delivered once
+	//if oldValue.MessageID < message.Val.MessageID {
+	//	return true
+	//}
+	//return false
 }
