@@ -84,7 +84,7 @@ func createListener(port int, ok chan<- bool) {
 }
 
 func main() {
-	numberClients := 1
+	numberClients := 5
 	destPrefix := 11380
 	wait := make(chan bool)
 	for client := 1; client <= numberClients; client++ {
@@ -100,7 +100,12 @@ func sendRequest(method, key, value, destAddr, returnAddr string) {
 	if method == put {
 		req, _ := http.NewRequest("PUT", destAddr+"/"+key+"/"+value, bytes.NewBufferString(returnAddr))
 		client := &http.Client{}
-		client.Do(req)
+		r, err := client.Do(req)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Println(r.Body)
+		}
 		fmt.Println("sending to " + destAddr)
 	} else {
 		resp, err := http.Get(destAddr + "/" + key)

@@ -77,17 +77,20 @@ func (m message) String() string {
 	return "MessageID: " + id + " dummy"
 }
 
-func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message, errorC <-chan error, sendMessageC chan<- message) *kvstore {
+func (s *kvstore) start(commitC <-chan *message, errorC <-chan error) {
+	// replay log into key-value map
+	s.readCommits(commitC, errorC)
+	// read commits from raft into kvStore map until error
+	go s.readCommits(commitC, errorC)
+}
+
+func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, sendMessageC chan<- message) *kvstore {
 	s := &kvstore{
 		proposeC:     proposeC,
 		kvStore:      newStore(),
 		snapshotter:  snapshotter,
 		sendMessageC: sendMessageC,
 	}
-	// replay log into key-value map
-	s.readCommits(commitC, errorC)
-	// read commits from raft into kvStore map until error
-	go s.readCommits(commitC, errorC)
 	return s
 }
 

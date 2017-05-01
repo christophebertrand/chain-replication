@@ -16,7 +16,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -110,6 +109,11 @@ func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			n.messageDelivered(msgID, earliestUndelivered)
 		} else { // new message from client
+			if len(split) != 2 {
+				log.Printf("wrong message format")
+				http.Error(w, "wrong message format", http.StatusBadRequest)
+				return
+			}
 			value := split[1]
 			retAddr, err := ioutil.ReadAll(r.Body)
 			if err != nil {
@@ -206,7 +210,7 @@ func httpPut(urlStr string, body io.Reader) (*http.Response, error) {
 //it also notifies the peers that the message has been delivered
 func (n *clusterNode) sendToClient(msg message) {
 	// returnAddr:port/msgID_Value
-	fmt.Println("I am " + strconv.Itoa(n.ID) + " and I am sending message " + msg.String() + " to the client")
+	log.Printf("I am " + strconv.Itoa(n.ID) + " and I am sending message " + msg.String() + " to the client")
 	retAddr := msg.RetAddr + "/" + strconv.Itoa(int(msg.ID)) + "_" + msg.Val
 	body := bytes.NewBufferString(strconv.Itoa(int(msg.ID)))
 	resp, err := httpPut(retAddr, body)
@@ -215,9 +219,8 @@ func (n *clusterNode) sendToClient(msg message) {
 	} else {
 		n.broadcastDelivered(msg)
 		n.messageDelivered(msg.ID, n.earliestUndelivered)
-
+		resp.Body.Close()
 	}
-	resp.Body.Close()
 }
 
 //responsible computes which peer, among the active peers, is responsible to send the message

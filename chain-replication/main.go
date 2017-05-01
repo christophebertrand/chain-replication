@@ -26,7 +26,7 @@ import (
 )
 
 func main() {
-	fmt.Print("starting new raft node")
+	fmt.Println("starting new raft node")
 	raftClusterString := flag.String("raftCluster", "http://127.0.0.1:9021", "comma separated cluster raft peers")
 	clusterString := flag.String("cluster", "http://127.0.0.1:9021", "comma separated cluster peers")
 	id := flag.Int("id", 1, "node ID")
@@ -42,26 +42,25 @@ func main() {
 	if *succ != "-1" {
 		successors = strings.Split(*succ, ",")
 	}
-	fmt.Println(cluster)
 	first := false
 	if *pred == "-1" {
 		first = true
 	}
-	proposeC := make(chan message)
+	proposeC := make(chan message) // kv -> raft
 	defer close(proposeC)
-	confChangeC := make(chan raftpb.ConfChange)
+	confChangeC := make(chan raftpb.ConfChange) //cluster -> raft
 	defer close(confChangeC)
-	sendMessageC := make(chan message)
+	sendMessageC := make(chan message) //kv -> cluster
 	defer close(sendMessageC)
 
 	// raft provides a commit stream for the proposals from the http api
 	var kvs *kvstore
 	getSnapshot := func() ([]byte, error) { return kvs.getSnapshot() }
 	commitC, errorC, snapshotterReady := newRaftNode(*id, *clusterID, raftCluster, *join, getSnapshot, proposeC, confChangeC, first)
-	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC, sendMessageC)
+	kvs = newKVStore(<-snapshotterReady, proposeC, sendMessageC)
 	node := newClusterNode(kvs, sendMessageC, confChangeC, successors, 10, cluster, *id-1)
 	// the key-value http handler will propose updates to raft
-	fmt.Println(cluster)
+	kvs.start(commitC, errorC)
 	port, err := strconv.ParseInt(strings.Split(cluster[*id-1], ":")[2], 10, 32)
 	if err != nil {
 		log.Fatal("could not parse port")

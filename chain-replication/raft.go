@@ -36,7 +36,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-var lastIndex uint64
+var lastInd uint64
 
 // A key-value stream backed by raft
 type raftNode struct {
@@ -164,7 +164,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			if m.ID == 0 {
 				//add dummy messages to make messageIDs continuous
 				if rc.first {
-					for j := lastIndex; j < ents[i].Index; j++ {
+					for j := lastInd; j < ents[i].Index; j++ {
 						dummy := message{j, DummyMessage, "", "", "", true}
 						select {
 						case rc.commitC <- &dummy:
@@ -173,7 +173,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 						}
 					}
 				}
-				lastIndex = ents[i].Index
+				lastInd = ents[i].Index + 1
 				m.ID = ents[i].Index
 			}
 			select {
@@ -202,9 +202,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 				}
 				rc.transport.RemovePeer(types.ID(cc.NodeID))
 			}
-			fmt.Println(ents[i].Index)
 		default:
-			fmt.Println(ents[i].Type)
 		}
 
 		// after commit, update appliedIndex
