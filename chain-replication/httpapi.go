@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/coreos/etcd/raft/raftpb"
 )
@@ -36,7 +37,7 @@ type clusterNode struct {
 	store               *kvstore
 	confChangeC         chan<- raftpb.ConfChange
 	earliestUndelivered uint64
-	delivered           *MessageSet
+	delivered           MessageSet
 	//TODO optimize replace MessageSet by []MessageSet
 	toDeliver map[uint64]message
 
@@ -45,6 +46,7 @@ type clusterNode struct {
 	maxPeers   int
 	ID         int
 	peers      []peer
+	mu         sync.RWMutex
 }
 
 func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- raftpb.ConfChange, successors []string, maxPeers int, addresses []string, ID int) *clusterNode {
@@ -231,8 +233,10 @@ func (n *clusterNode) processMessages() {
 
 		if n.successor == "" {
 			if !msg.Replay {
-
-				if !n.delivered.Contains(msg.ID) {
+				n.mu.Lock()
+				contains := n.delivered.Contains(msg.ID)
+				n.mu.Unlock()
+				if !contains {
 					// activePeers[i] gives use the ith active peer in n.peers
 					activePeers := make([]int, len(n.peers))
 					for i, peer := range n.peers {
@@ -241,7 +245,9 @@ func (n *clusterNode) processMessages() {
 						}
 					}
 					responsible := activePeers[n.responsible(msg, len(activePeers))]
+					n.mu.Lock()
 					n.toDeliver[msg.ID] = msg
+					n.mu.Unlock()
 					if responsible == n.ID {
 						n.sendToClient(msg)
 					}
@@ -256,7 +262,9 @@ func (n *clusterNode) processMessages() {
 
 //broadcastDelivered send a message to all peers of the node that msg has been delivered to the next entity (cluster or client)
 func (n *clusterNode) broadcastDelivered(msg message) {
+	n.mu.Lock()
 	undeliveredS := strconv.FormatUint(n.earliestUndelivered, 10)
+	n.mu.Unlock()
 	messageIDS := strconv.FormatUint(msg.ID, 10)
 	body := bytes.NewBufferString(undeliveredS + "/" + messageIDS)
 	for _, peer := range n.peers {
@@ -269,7 +277,10 @@ func (n *clusterNode) broadcastDelivered(msg message) {
 
 //messageDelivered removes msg from the toDeliver s and adds it to delivered with compaction
 func (n *clusterNode) messageDelivered(msgID uint64, earliestUndelivered uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.delivered.AddUntil(earliestUndelivered)
 	n.delivered.Add(msgID)
 	delete(n.toDeliver, msgID)
+
 }

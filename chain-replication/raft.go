@@ -193,8 +193,6 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 					fmt.Print(" addnode ")
 
 					rc.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
-				} else {
-					fmt.Print("other")
 				}
 			case raftpb.ConfChangeRemoveNode:
 				fmt.Print(" removenode ")
@@ -477,6 +475,7 @@ func (rc *raftNode) serveChannels() {
 		select {
 		case <-ticker.C:
 			rc.node.Tick()
+			rc.node.Status()
 
 		// store raft entries to wal, then publish over commit channel
 		case rd := <-rc.node.Ready():

@@ -31,17 +31,12 @@ type kvstore struct {
 	mu           sync.RWMutex
 	kvStore      store // current committed key-value pairs
 	snapshotter  *snap.Snapshotter
-	successor    string
 	sendMessageC chan<- message // channel for sending commited messages to httpAPI
-	//earliestUnreceived uint64
-	//received map[uint64]struct{}
 }
 
 type store struct {
 	kv   map[string]string
-	seen *MessageSet
-	//earliestUnseen uint64
-	//seen           map[uint64]struct{}
+	seen MessageSet
 }
 
 func newStore() store {
@@ -82,19 +77,12 @@ func (m message) String() string {
 	return "MessageID: " + id + " dummy"
 }
 
-type value struct {
-	Val       string
-	MessageID uint64
-}
-
 func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, commitC <-chan *message, errorC <-chan error, sendMessageC chan<- message) *kvstore {
 	s := &kvstore{
 		proposeC:     proposeC,
 		kvStore:      newStore(),
 		snapshotter:  snapshotter,
 		sendMessageC: sendMessageC,
-		//earliestUnreceived: 0,
-		//received:           make(map[uint64]struct{}),
 	}
 	// replay log into key-value map
 	s.readCommits(commitC, errorC)
@@ -111,16 +99,16 @@ func (s *kvstore) Lookup(key string) (string, bool) {
 }
 
 func (s *kvstore) Propagate(data []byte) {
-	message := decodeMessage(data)
-	if s.isNewMessage(message) {
-		s.proposeC <- message
+	msg := decodeMessage(data)
+	if s.isNewMessage(msg) {
+		s.proposeC <- msg
 	}
 }
 
 //Propose sends a new message to the raft layer
 func (s *kvstore) Propose(k string, v string, retAddr string) {
-	message := message{0, NormalMessage, retAddr, k, v, false}
-	s.proposeC <- message
+	msg := message{0, NormalMessage, retAddr, k, v, false}
+	s.proposeC <- msg
 }
 
 func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
@@ -141,15 +129,15 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			}
 			continue
 		}
-		message := *data
+		msg := *data
 
-		if s.isNewMessage(message) {
-			if message.MsgType == NormalMessage {
+		if s.isNewMessage(msg) {
+			if msg.MsgType == NormalMessage {
 				s.mu.Lock()
-				s.kvStore.kv[message.Key] = message.Val
-				s.kvStore.seen.Add(message.ID)
+				s.kvStore.kv[msg.Key] = msg.Val
+				s.kvStore.seen.Add(msg.ID)
 				s.mu.Unlock()
-				s.sendMessageC <- message
+				s.sendMessageC <- msg
 			}
 		}
 	}
@@ -165,24 +153,24 @@ func (s *kvstore) getSnapshot() ([]byte, error) {
 }
 
 func (s *kvstore) recoverFromSnapshot(snapshot []byte) error {
-	var store store
-	if err := json.Unmarshal(snapshot, &store); err != nil {
+	var st store
+	if err := json.Unmarshal(snapshot, &st); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.kvStore = store
+	s.kvStore = st
 	s.mu.Unlock()
 	return nil
 }
 
 func decodeMessage(b []byte) message {
-	var message message
+	var msg message
 	buf := bytes.NewBuffer(b)
 	dec := gob.NewDecoder(buf)
-	if err := dec.Decode(&message); err != nil {
+	if err := dec.Decode(&msg); err != nil {
 		log.Fatalf("kvstore: could not decode message (%v)", err)
 	}
-	return message
+	return msg
 }
 
 func encodeMessage(message message) []byte {
