@@ -7,7 +7,7 @@ type MessageSet struct {
 }
 
 func NewMessageSet() MessageSet {
-	return MessageSet{set: make(map[uint64]struct{}), earliestUnseen: 0}
+	return MessageSet{set: make(map[uint64]struct{}), earliestUnseen: 1}
 }
 
 func (s *MessageSet) Add(msgID uint64) {

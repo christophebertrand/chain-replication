@@ -24,7 +24,10 @@ import (
 	"strings"
 	"sync"
 
+	"time"
+
 	"github.com/coreos/etcd/raft/raftpb"
+	"net"
 )
 
 type peer struct {
@@ -33,45 +36,128 @@ type peer struct {
 }
 
 type clusterNode struct {
-	store               *kvstore
-	confChangeC         chan<- raftpb.ConfChange
-	earliestUndelivered uint64
-	delivered           MessageSet
+	store       *kvstore
+	confChangeC chan<- raftpb.ConfChange
 	//TODO optimize replace MessageSet by []MessageSet
-	toDeliver map[uint64]message
 
 	newMessage <-chan message
 	successor  string
+	successors []peer
 	maxPeers   int
 	ID         int
 	peers      []peer
-	mu         sync.RWMutex
+
+	chanMu       sync.RWMutex
+	appliedChans map[uint64]chan bool
+	timeoutChans map[uint64]chan bool
+
+	mu        sync.RWMutex
+	toDeliver map[uint64]message
+	delivered MessageSet
 }
 
 func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- raftpb.ConfChange, successors []string, maxPeers int, addresses []string, ID int) *clusterNode {
 	//TODO check implicit ordering of peers (match to ids of peers)
 	peers := make([]peer, len(addresses))
+	s := make([]peer, len(successors))
 	var successor string //TODO successor is temporary, compute seccessor based on msgID and responsible(msgID)
 	if successors != nil {
 		successor = successors[0]
+	}
+	for i, succ := range successors {
+		s[i] = peer{true, succ}
 	}
 	for i, addr := range addresses {
 		peers[i] = peer{true, addr}
 	}
 	c := clusterNode{
-		store:               kv,
-		confChangeC:         confChangeC,
-		earliestUndelivered: uint64(1),
-		delivered:           NewMessageSet(),
-		toDeliver:           make(map[uint64]message),
-		newMessage:          newMessage,
-		successor:           successor,
-		maxPeers:            maxPeers,
-		ID:                  ID,
-		peers:               peers,
+		store:       kv,
+		confChangeC: confChangeC,
+		//earliestUndelivered: uint64(1),
+		delivered:    NewMessageSet(),
+		toDeliver:    make(map[uint64]message),
+		newMessage:   newMessage,
+		successor:    successor,
+		successors:   s,
+		maxPeers:     maxPeers,
+		ID:           ID,
+		peers:        peers,
+		appliedChans: make(map[uint64]chan bool),
+		timeoutChans: make(map[uint64]chan bool),
 	}
 	go c.processMessages()
 	return &c
+}
+
+func (n *clusterNode) processClientMsg(key string, value string, body []byte, w http.ResponseWriter) {
+	retAddr := body
+	n.store.Propose(key, value, string(retAddr))
+	//client gets repsonse if it has succeeded from tail of the cluster
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *clusterNode) processDeliveredMsg(body []byte, w http.ResponseWriter) {
+	split := strings.Split(string(body), "/")
+	msgID, err := strconv.ParseUint(split[0], 10, 64)
+	if err != nil {
+		log.Fatal("couldn't convert msgID")
+	}
+	earliestUndelivered, err := strconv.ParseUint(split[1], 10, 64)
+	if err != nil {
+		log.Fatal("couldn't convert earliestUndelivered")
+	}
+	n.messageDelivered(msgID, earliestUndelivered)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (n *clusterNode) processPredMsg(split []string, body []byte, w http.ResponseWriter) {
+	msg := decodeMessage(body)
+	n.mu.Lock()
+	del := n.delivered.Contains(msg.ID)
+	_, toDel := n.toDeliver[msg.ID]
+	n.mu.Unlock()
+	//the message has already been applied by raft
+	if del || toDel {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	n.chanMu.Lock()
+	if n.appliedChans[msg.ID] != nil {
+		// already received and is processed now
+		n.chanMu.Unlock()
+		http.Error(w, "already recieved this message", http.StatusConflict)
+		return
+	} else {
+		n.appliedChans[msg.ID] = make(chan bool)
+		n.timeoutChans[msg.ID] = make(chan bool)
+		n.chanMu.Unlock()
+
+	}
+	n.store.Propagate(msg)
+	n.chanMu.Lock()
+	applied := n.appliedChans[msg.ID]
+	timeout := n.timeoutChans[msg.ID]
+	n.chanMu.Unlock()
+	//_, ok := n.appliedChans[msg.ID]
+	//log.Printf("msg id %v, chan %v", msg.ID, ok)
+	select {
+	case <-applied:
+		w.WriteHeader(http.StatusOK)
+
+	case <-time.After(5 * time.Second):
+		http.Error(w, "timed out ", http.StatusRequestTimeout)
+		go func() {
+			select {
+			case timeout <- true:
+			case <-applied:
+			}
+		}()
+
+	}
+	n.chanMu.Lock()
+	delete(n.appliedChans, msg.ID)
+	delete(n.timeoutChans, msg.ID)
+	n.chanMu.Unlock()
 }
 
 func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -80,52 +166,29 @@ func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == "PUT":
 		// PUT method has:
-		//-RequestURI = "key/value" and body = "returnAddr"  if it is a new message
-		//-RequestURI = "" 					 and body = "message" 		if it is a PUTSucc
+		//-RequestURI = "" 					 and body = "message" 										if it is a PUTSucc
+		//-RequestURI = "delivered"  and body = "Msg/earliestUndelivered" 		if it is a Delivered msg
+		//-RequestURI = "key/value"  and body = "returnAddr" 									if it is a new message from client
 		split := strings.Split(key, "/")
 		key = split[0]
-		if key == "" { //message from pred
-			buf := new(bytes.Buffer)
-			buf.ReadFrom(r.Body)
-			b := buf.Bytes()
-			// msg := decodeMessage(b)
-
-			n.store.Propagate(b)
-		} else if key == "delivered" && len(split) == 1 { // peer has delivered some messages
-			str, err := ioutil.ReadAll(r.Body)
-			if err != nil {
-				log.Printf("Failed to read on PUT (%v)\n", err)
-				http.Error(w, "Failed on PUT", http.StatusBadRequest)
-				return
-			}
-			split = strings.Split(string(str), ",")
-			msgID, err := strconv.ParseUint(split[0], 10, 64)
-			if err != nil {
-				log.Fatal("couldn't convert msgID")
-			}
-			earliestUndelivered, err := strconv.ParseUint(split[1], 10, 64)
-			if err != nil {
-				log.Fatal("couldn't convert earliestUndelivered")
-			}
-			n.messageDelivered(msgID, earliestUndelivered)
-		} else { // new message from client
-			if len(split) != 2 {
-				log.Printf("wrong message format")
-				http.Error(w, "wrong message format", http.StatusBadRequest)
-				return
-			}
-			value := split[1]
-			retAddr, err := ioutil.ReadAll(r.Body)
-			if err != nil {
-				log.Printf("Failed to read on PUT (%v)\n", err)
-				http.Error(w, "Failed on PUT", http.StatusBadRequest)
-				return
-			}
-			n.store.Propose(key, string(value), string(retAddr))
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("Failed to read on PUT (%v)\n", err)
+			http.Error(w, "Failed on PUT", http.StatusBadRequest)
+			return
 		}
-		// Optimistic-- no waiting for ack from raft. Value is not yet
-		// committed so a subsequent GET on the key may return old value
-		w.WriteHeader(http.StatusNoContent)
+		if key == "" { //message from pred
+			n.processPredMsg(split, body, w)
+		} else if key == "delivered" && len(split) == 1 { // peer has delivered some messages
+			n.processDeliveredMsg(body, w)
+		} else if len(split) == 2 { // new message from client
+			n.processClientMsg(split[0], split[1], body, w)
+		} else {
+			log.Printf("wrong message format")
+			http.Error(w, "wrong message format", http.StatusBadRequest)
+			return
+		}
+
 	case r.Method == "GET":
 		if v, ok := n.store.Lookup(key); ok {
 			w.Write([]byte(v))
@@ -202,29 +265,24 @@ func (n *clusterNode) serveHTTPKV(port int, errorC <-chan error) {
 func httpPut(urlStr string, body io.Reader) (*http.Response, error) {
 	req, _ := http.NewRequest("PUT", urlStr, body)
 	// time.Sleep(3 * time.Second)
-	client := &http.Client{}
+	var DefaultTransport http.RoundTripper = &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: true,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	client := &http.Client{Transport:DefaultTransport, }
 	return client.Do(req)
 }
 
-//sendToClient sends an acknowledgement to the client that the message has been recieved.
-//it also notifies the peers that the message has been delivered
-func (n *clusterNode) sendToClient(msg message) {
-	// returnAddr:port/msgID_Value
-	log.Printf("I am " + strconv.Itoa(n.ID) + " and I am sending message " + msg.String() + " to the client")
-	retAddr := msg.RetAddr + "/" + strconv.Itoa(int(msg.ID)) + "_" + msg.Val
-	body := bytes.NewBufferString(strconv.Itoa(int(msg.ID)))
-	resp, err := httpPut(retAddr, body)
-	if err != nil {
-		//TODO implement backoff
-	} else {
-		n.broadcastDelivered(msg)
-		n.messageDelivered(msg.ID, n.earliestUndelivered)
-		resp.Body.Close()
-	}
-}
-
 //responsible computes which peer, among the active peers, is responsible to send the message
-func (n *clusterNode) responsible(msg message, peerLength int) int {
+func responsible(msg message, peerLength int) int {
 	r := msg.ID % uint64(peerLength)
 	return int(r)
 }
@@ -233,47 +291,172 @@ func (n *clusterNode) responsible(msg message, peerLength int) int {
 // or send an acknowledgement to the client
 func (n *clusterNode) processMessages() {
 	for msg := range n.newMessage {
-
-		if n.successor == "" {
-			if !msg.Replay {
-				n.mu.Lock()
-				contains := n.delivered.Contains(msg.ID)
-				n.mu.Unlock()
-				if !contains {
-					// activePeers[i] gives use the ith active peer in n.peers
-					activePeers := make([]int, len(n.peers))
-					for i, peer := range n.peers {
-						if peer.active {
-							activePeers = append(activePeers, i)
-						}
-					}
-					responsible := activePeers[n.responsible(msg, len(activePeers))]
-					n.mu.Lock()
-					n.toDeliver[msg.ID] = msg
-					n.mu.Unlock()
-					if responsible == n.ID {
-						n.sendToClient(msg)
+		//log.Printf("processing new message %v", msg.ID)
+		go func(msg message) {
+			n.mu.Lock()
+			del := n.delivered.Contains(msg.ID)
+			_, toDel := n.toDeliver[msg.ID]
+			n.mu.Unlock()
+			if !del || !toDel {
+				n.chanMu.Lock()
+				applied, ok1 := n.appliedChans[msg.ID]
+				timeout, ok2 := n.timeoutChans[msg.ID]
+				n.chanMu.Unlock()
+				if ok1 && ok2 {
+					select {
+					case applied <- true:
+					case <-timeout:
 					}
 				}
 			}
-		} else {
-			buf := encodeMessage(msg)
-			go httpPut(n.successor, bytes.NewBuffer(buf))
+		}(msg)
+		if n.IsResponsible(msg) {
+			//we are at the tail and need to send the message to the client
+			n.mu.Lock()
+			areadyDelivered := n.delivered.Contains(msg.ID)
+			n.mu.Unlock()
+			//check if message was already delivered
+			if !areadyDelivered {
+				n.mu.Lock()
+				n.toDeliver[msg.ID] = msg
+				n.mu.Unlock()
+				if n.successor == "" {
+					if !msg.Replay {
+						go n.sendToClient(msg)
+					}
+				} else {
+					go n.sendToNextCluster(msg)
+				}
+			}
 		}
 	}
+}
+
+func backOffTimer(channel chan<- bool, success <-chan bool, ticks int) {
+	for i, t := 1, 1; i <= ticks; i++ {
+		t *= 2
+		select {
+		case <-time.After(time.Duration(t) * time.Second):
+			channel <- true
+		case <-success:
+			i = ticks
+		}
+	}
+	close(channel)
+}
+
+//sendToClient sends an acknowledgement to the client that the message has been recieved.
+//it also notifies the peers that the message has been delivered
+func (n *clusterNode) sendToClient(msg message) {
+	// returnAddr:port/msgID_Value
+	log.Printf("I am sending message " + msg.String() + " to the client")
+	tick := make(chan bool)
+	success := make(chan bool)
+	go backOffTimer(tick, success, 5)
+	for {
+		retAddr := msg.RetAddr + "/" + strconv.Itoa(int(msg.ID)) + "_" + msg.Val
+		body := bytes.NewBufferString(strconv.Itoa(int(msg.ID)))
+		resp, err := httpPut(retAddr, body)
+		if err != nil {
+			_, ok := <-tick
+			if !ok {
+				log.Printf("could not send to client %v", err)
+				//TODO can we consider the message delivered?
+				n.broadcastDelivered(msg)
+				break
+			}
+		} else {
+			success <- true
+			n.broadcastDelivered(msg)
+			resp.Body.Close()
+			break
+		}
+
+	}
+}
+
+func (n *clusterNode) sendToNextCluster(msg message) {
+	dest := n.findResponsible(msg, n.successors)
+	// log.Printf("I am sending message " + msg.String() + " to " + dest)
+	tick := make(chan bool)
+	success := make(chan bool)
+	go backOffTimer(tick, success, 10)
+	buf := encodeMessage(msg)
+	for {
+		resp, err := httpPut(dest, bytes.NewBuffer(buf))
+		if err != nil {
+			_, ok := <-tick
+			if !ok {
+				log.Printf("could not send to client %v", err)
+				//TODO can we consider the message delivered?
+				n.broadcastDelivered(msg)
+				break
+			}
+		} else {
+			if resp.StatusCode == http.StatusRequestTimeout {
+				log.Printf("timeout from %s", dest)
+				_, ok := <-tick
+				if !ok {
+					log.Printf("could not send to client %v", err)
+					//TODO can we consider the message delivered?
+					n.broadcastDelivered(msg)
+					break
+				}
+			} else {
+				success <- true
+				n.broadcastDelivered(msg)
+				if n.ID == 0 {
+					log.Printf("success %v for msg %v", err, msg.ID)
+				}
+				break
+			}
+			resp.Body.Close()
+		}
+	}
+}
+
+func (n *clusterNode) findResponsible(msg message, cluster []peer) string {
+	var activeNodes []string
+	for _, node := range cluster {
+		if node.active {
+			activeNodes = append(activeNodes, node.address)
+		}
+	}
+	return activeNodes[responsible(msg, len(activeNodes))]
+}
+
+func (n *clusterNode) IsResponsible(msg message) bool {
+	var activePeers []int
+	for i, peer := range n.peers {
+		if peer.active {
+			activePeers = append(activePeers, i)
+		}
+	}
+	responsible := activePeers[responsible(msg, len(activePeers))]
+
+	return responsible == n.ID
 }
 
 //broadcastDelivered send a message to all peers of the node that msg has been delivered to the next entity (cluster or client)
 func (n *clusterNode) broadcastDelivered(msg message) {
 	n.mu.Lock()
-	undeliveredS := strconv.FormatUint(n.earliestUndelivered, 10)
+	undelivered := n.delivered.earliestUnseen
 	n.mu.Unlock()
 	messageIDS := strconv.FormatUint(msg.ID, 10)
-	body := bytes.NewBufferString(undeliveredS + "/" + messageIDS)
+	undeliveredS := strconv.FormatUint(undelivered, 10)
+	n.messageDelivered(msg.ID, undelivered)
 	for _, peer := range n.peers {
 		if peer.active {
-			url := peer.address + "," + "delivered"
-			go httpPut(url, body)
+			body := bytes.NewBufferString(messageIDS + "/" + undeliveredS)
+			url := peer.address + "/" + "delivered"
+			go func(url string, body *bytes.Buffer) {
+				resp, err := httpPut(url, body)
+				if err != nil {
+					log.Printf("delivered had some errors , %v", err)
+				} else {
+					resp.Body.Close()
+				}
+			}(url, body)
 		}
 	}
 }
@@ -285,5 +468,4 @@ func (n *clusterNode) messageDelivered(msgID uint64, earliestUndelivered uint64)
 	n.delivered.AddUntil(earliestUndelivered)
 	n.delivered.Add(msgID)
 	delete(n.toDeliver, msgID)
-
 }

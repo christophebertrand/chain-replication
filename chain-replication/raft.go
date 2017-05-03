@@ -36,7 +36,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-var lastInd uint64
+var lastInd = uint64(1)
 
 // A key-value stream backed by raft
 type raftNode struct {

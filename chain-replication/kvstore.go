@@ -101,8 +101,10 @@ func (s *kvstore) Lookup(key string) (string, bool) {
 	return v, ok
 }
 
-func (s *kvstore) Propagate(data []byte) {
-	msg := decodeMessage(data)
+func (s *kvstore) Propagate(msg message) {
+	//if msg.ID == 1 {
+	//	log.Printf("I propagating " + msg.String() + " from pred")
+	//}
 	if s.isNewMessage(msg) {
 		s.proposeC <- msg
 	}
@@ -134,14 +136,20 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 		}
 		msg := *data
 
+		//if msg.ID == 1 {
+		//	log.Printf("raft applied " + msg.String() )
+		//}
 		if s.isNewMessage(msg) {
 			if msg.MsgType == NormalMessage {
 				s.mu.Lock()
 				s.kvStore.kv[msg.Key] = msg.Val
 				s.kvStore.seen.Add(msg.ID)
 				s.mu.Unlock()
-				s.sendMessageC <- msg
 			}
+			s.sendMessageC <- msg
+			//if msg.ID == 1 {
+			//	log.Printf("sent to http " + msg.String() )
+			//}
 		}
 	}
 	if err, ok := <-errorC; ok {
