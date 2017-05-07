@@ -16,18 +16,16 @@ package main
 
 import (
 	"bytes"
+	"github.com/coreos/etcd/raft/raftpb"
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-
 	"time"
-
-	"github.com/coreos/etcd/raft/raftpb"
-	"net"
 )
 
 type peer struct {
@@ -277,7 +275,7 @@ func httpPut(urlStr string, body io.Reader) (*http.Response, error) {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	client := &http.Client{Transport:DefaultTransport, }
+	client := &http.Client{Transport: DefaultTransport}
 	return client.Do(req)
 }
 
@@ -332,12 +330,12 @@ func (n *clusterNode) processMessages() {
 	}
 }
 
-func backOffTimer(channel chan<- bool, success <-chan bool, ticks int) {
+func backOffTimer(channel chan<- int, success <-chan bool, ticks int) {
 	for i, t := 1, 1; i <= ticks; i++ {
 		t *= 2
 		select {
 		case <-time.After(time.Duration(t) * time.Second):
-			channel <- true
+			channel <- i
 		case <-success:
 			i = ticks
 		}
@@ -350,7 +348,7 @@ func backOffTimer(channel chan<- bool, success <-chan bool, ticks int) {
 func (n *clusterNode) sendToClient(msg message) {
 	// returnAddr:port/msgID_Value
 	log.Printf("I am sending message " + msg.String() + " to the client")
-	tick := make(chan bool)
+	tick := make(chan int)
 	success := make(chan bool)
 	go backOffTimer(tick, success, 5)
 	for {
@@ -378,26 +376,27 @@ func (n *clusterNode) sendToClient(msg message) {
 func (n *clusterNode) sendToNextCluster(msg message) {
 	dest := n.findResponsible(msg, n.successors)
 	// log.Printf("I am sending message " + msg.String() + " to " + dest)
-	tick := make(chan bool)
+	tick := make(chan int)
 	success := make(chan bool)
-	go backOffTimer(tick, success, 10)
+	go backOffTimer(tick, success, 4)
 	buf := encodeMessage(msg)
 	for {
 		resp, err := httpPut(dest, bytes.NewBuffer(buf))
 		if err != nil {
-			_, ok := <-tick
+			try, ok := <-tick
+			log.Printf("error from %s after %v try: %v", dest, try, err)
 			if !ok {
-				log.Printf("could not send to client %v", err)
+				log.Printf("could not send to client after %vtry:  %v", try, err)
 				//TODO can we consider the message delivered?
 				n.broadcastDelivered(msg)
 				break
 			}
 		} else {
 			if resp.StatusCode == http.StatusRequestTimeout {
-				log.Printf("timeout from %s", dest)
-				_, ok := <-tick
+				try, ok := <-tick
+				log.Printf("timeout from %s after %v try", dest, try)
 				if !ok {
-					log.Printf("could not send to client %v", err)
+					log.Printf("could not send to client after %v try:  %v", try, err)
 					//TODO can we consider the message delivered?
 					n.broadcastDelivered(msg)
 					break
