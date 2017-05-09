@@ -391,7 +391,7 @@ func (n *clusterNode) sendToNextCluster(msg message) {
 			}
 		}()
 		if err != nil {
-			<-time.After(1 * time.Second)
+			<-time.After(10 * time.Millisecond)
 			i++
 			dest = n.successors[i%len(n.successors)].address
 			//log.Printf("removing succ n %v with err %v", i, err)
