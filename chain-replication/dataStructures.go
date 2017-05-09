@@ -1,31 +1,31 @@
 package main
 
 type MessageSet struct {
-	set            map[uint64]struct{}
-	earliestUnseen uint64
+	Set            map[uint64]struct{} `json:"set"`
+	EarliestUnseen uint64              `json:"earliest"`
 	// mu             sync.RWMutex
 }
 
 func NewMessageSet() MessageSet {
-	return MessageSet{set: make(map[uint64]struct{}), earliestUnseen: 1}
+	return MessageSet{Set: make(map[uint64]struct{}), EarliestUnseen: 1}
 }
 
 func (s *MessageSet) Add(msgID uint64) {
 	// s.mu.Lock()
 	// defer s.mu.Unlock()
-	if msgID == s.earliestUnseen {
-		s.earliestUnseen++
-		maxRange := s.earliestUnseen + uint64(s.size())
-		for i := s.earliestUnseen; i < maxRange; i++ {
+	if msgID == s.EarliestUnseen {
+		s.EarliestUnseen++
+		maxRange := s.EarliestUnseen + uint64(s.size())
+		for i := s.EarliestUnseen; i < maxRange; i++ {
 			if s.Contains(i) {
-				delete(s.set, msgID)
-				s.earliestUnseen++
+				delete(s.Set, msgID)
+				s.EarliestUnseen++
 			} else {
 				return
 			}
 		}
 	} else {
-		s.set[msgID] = struct{}{}
+		s.Set[msgID] = struct{}{}
 	}
 }
 
@@ -33,17 +33,17 @@ func (s *MessageSet) Add(msgID uint64) {
 func (s *MessageSet) AddUntil(msgID uint64) {
 	// s.mu.Lock()
 	// defer s.mu.Unlock()
-	for i := s.earliestUnseen; i < msgID; i++ {
-		delete(s.set, i)
+	for i := s.EarliestUnseen; i < msgID; i++ {
+		delete(s.Set, i)
 	}
-	s.earliestUnseen = msgID
+	s.EarliestUnseen = msgID
 }
 
 func (s *MessageSet) Contains(id uint64) bool {
 	// s.mu.RLock()
 	// defer s.mu.RUnlock()
-	_, found := s.set[id]
-	return s.earliestUnseen > id || found
+	_, found := s.Set[id]
+	return s.EarliestUnseen > id || found
 }
 
 //func (s *MessageSet) Remove(id uint64) {
@@ -53,5 +53,5 @@ func (s *MessageSet) Contains(id uint64) bool {
 func (s *MessageSet) size() int {
 	// s.mu.RLock()
 	// defer s.mu.RUnlock()
-	return len(s.set)
+	return len(s.Set)
 }

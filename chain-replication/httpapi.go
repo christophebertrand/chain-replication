@@ -16,16 +16,17 @@ package main
 
 import (
 	"bytes"
-	"github.com/coreos/etcd/raft/raftpb"
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
+	// "net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/coreos/etcd/raft/raftpb"
 )
 
 type peer struct {
@@ -40,10 +41,10 @@ type clusterNode struct {
 
 	newMessage <-chan message
 	successor  string
-	successors []peer
+	successors []*peer
 	maxPeers   int
 	ID         int
-	peers      []peer
+	peers      []*peer
 
 	chanMu       sync.RWMutex
 	appliedChans map[uint64]chan bool
@@ -56,17 +57,17 @@ type clusterNode struct {
 
 func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- raftpb.ConfChange, successors []string, maxPeers int, addresses []string, ID int) *clusterNode {
 	//TODO check implicit ordering of peers (match to ids of peers)
-	peers := make([]peer, len(addresses))
-	s := make([]peer, len(successors))
+	peers := make([]*peer, len(addresses))
+	s := make([]*peer, len(successors))
 	var successor string //TODO successor is temporary, compute seccessor based on msgID and responsible(msgID)
 	if successors != nil {
 		successor = successors[0]
 	}
 	for i, succ := range successors {
-		s[i] = peer{true, succ}
+		s[i] = &peer{true, succ}
 	}
 	for i, addr := range addresses {
-		peers[i] = peer{true, addr}
+		peers[i] = &peer{true, addr}
 	}
 	c := clusterNode{
 		store:       kv,
@@ -125,12 +126,11 @@ func (n *clusterNode) processPredMsg(split []string, body []byte, w http.Respons
 		n.chanMu.Unlock()
 		http.Error(w, "already recieved this message", http.StatusConflict)
 		return
-	} else {
-		n.appliedChans[msg.ID] = make(chan bool)
-		n.timeoutChans[msg.ID] = make(chan bool)
-		n.chanMu.Unlock()
-
 	}
+	n.appliedChans[msg.ID] = make(chan bool)
+	n.timeoutChans[msg.ID] = make(chan bool)
+	n.chanMu.Unlock()
+
 	n.store.Propagate(msg)
 	n.chanMu.Lock()
 	applied := n.appliedChans[msg.ID]
@@ -177,10 +177,13 @@ func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if key == "" { //message from pred
 			n.processPredMsg(split, body, w)
+
 		} else if key == "delivered" && len(split) == 1 { // peer has delivered some messages
 			n.processDeliveredMsg(body, w)
+
 		} else if len(split) == 2 { // new message from client
 			n.processClientMsg(split[0], split[1], body, w)
+
 		} else {
 			log.Printf("wrong message format")
 			http.Error(w, "wrong message format", http.StatusBadRequest)
@@ -263,19 +266,21 @@ func (n *clusterNode) serveHTTPKV(port int, errorC <-chan error) {
 func httpPut(urlStr string, body io.Reader) (*http.Response, error) {
 	req, _ := http.NewRequest("PUT", urlStr, body)
 	// time.Sleep(3 * time.Second)
-	var DefaultTransport http.RoundTripper = &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: true,
-		}).DialContext,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	client := &http.Client{Transport: DefaultTransport}
+	//var DefaultTransport http.RoundTripper = &http.Transport{
+	//	Proxy: http.ProxyFromEnvironment,
+	//	DialContext: (&net.Dialer{
+	//		Timeout:   30 * time.Second,
+	//		KeepAlive: 30 * time.Second,
+	//		DualStack: true,
+	//	}).DialContext,
+	//	MaxIdleConns:          100,
+	//	IdleConnTimeout:       90 * time.Second,
+	//	TLSHandshakeTimeout:   10 * time.Second,
+	//	ExpectContinueTimeout: 1 * time.Second,
+	//}
+	//client := &http.Client{Transport: DefaultTransport}
+	client := &http.Client{}
+	req.Close = true
 	return client.Do(req)
 }
 
@@ -288,6 +293,7 @@ func responsible(msg message, peerLength int) int {
 //processMessages reads messages coming from the kvstore ( n.newMessage) and sends it to the next cluster if it exists,
 // or send an acknowledgement to the client
 func (n *clusterNode) processMessages() {
+	<-time.After(1 * time.Second)
 	for msg := range n.newMessage {
 		//log.Printf("processing new message %v", msg.ID)
 		go func(msg message) {
@@ -308,7 +314,8 @@ func (n *clusterNode) processMessages() {
 				}
 			}
 		}(msg)
-		if n.IsResponsible(msg) {
+		_, resp := findResponsible(msg, n.peers)
+		if n.ID == resp {
 			//we are at the tail and need to send the message to the client
 			n.mu.Lock()
 			areadyDelivered := n.delivered.Contains(msg.ID)
@@ -347,7 +354,7 @@ func backOffTimer(channel chan<- int, success <-chan bool, ticks int) {
 //it also notifies the peers that the message has been delivered
 func (n *clusterNode) sendToClient(msg message) {
 	// returnAddr:port/msgID_Value
-	log.Printf("I am sending message " + msg.String() + " to the client")
+	// log.Printf("I am sending message " + msg.String() + " to the client")
 	tick := make(chan int)
 	success := make(chan bool)
 	go backOffTimer(tick, success, 5)
@@ -374,72 +381,51 @@ func (n *clusterNode) sendToClient(msg message) {
 }
 
 func (n *clusterNode) sendToNextCluster(msg message) {
-	dest := n.findResponsible(msg, n.successors)
-	// log.Printf("I am sending message " + msg.String() + " to " + dest)
-	tick := make(chan int)
-	success := make(chan bool)
-	go backOffTimer(tick, success, 4)
 	buf := encodeMessage(msg)
+	dest, i := findResponsible(msg, n.successors)
 	for {
 		resp, err := httpPut(dest, bytes.NewBuffer(buf))
-		if err != nil {
-			try, ok := <-tick
-			log.Printf("error from %s after %v try: %v", dest, try, err)
-			if !ok {
-				log.Printf("could not send to client after %vtry:  %v", try, err)
-				//TODO can we consider the message delivered?
-				n.broadcastDelivered(msg)
-				break
+		defer func() {
+			if resp != nil {
+				resp.Body.Close()
 			}
+		}()
+		if err != nil {
+			<-time.After(1 * time.Second)
+			i++
+			dest = n.successors[i%len(n.successors)].address
+			log.Printf("removing succ n %v with err %v", i, err)
+
 		} else {
 			if resp.StatusCode == http.StatusRequestTimeout {
-				try, ok := <-tick
-				log.Printf("timeout from %s after %v try", dest, try)
-				if !ok {
-					log.Printf("could not send to client after %v try:  %v", try, err)
-					//TODO can we consider the message delivered?
-					n.broadcastDelivered(msg)
-					break
-				}
+				<-time.After(1 * time.Second)
 			} else {
-				success <- true
 				n.broadcastDelivered(msg)
-				if n.ID == 0 {
-					log.Printf("success %v for msg %v", err, msg.ID)
-				}
 				break
 			}
-			resp.Body.Close()
 		}
 	}
 }
 
-func (n *clusterNode) findResponsible(msg message, cluster []peer) string {
-	var activeNodes []string
-	for _, node := range cluster {
+func findResponsible(msg message, cluster []*peer) (string, int) {
+	var activeNodesIndexes []int
+
+	for i, node := range cluster {
 		if node.active {
-			activeNodes = append(activeNodes, node.address)
+			activeNodesIndexes = append(activeNodesIndexes, i)
 		}
 	}
-	return activeNodes[responsible(msg, len(activeNodes))]
-}
-
-func (n *clusterNode) IsResponsible(msg message) bool {
-	var activePeers []int
-	for i, peer := range n.peers {
-		if peer.active {
-			activePeers = append(activePeers, i)
-		}
+	if len(activeNodesIndexes) == 0 {
+		return "", -1
 	}
-	responsible := activePeers[responsible(msg, len(activePeers))]
-
-	return responsible == n.ID
+	respIndex := activeNodesIndexes[responsible(msg, len(activeNodesIndexes))]
+	return cluster[respIndex].address, respIndex
 }
 
 //broadcastDelivered send a message to all peers of the node that msg has been delivered to the next entity (cluster or client)
 func (n *clusterNode) broadcastDelivered(msg message) {
 	n.mu.Lock()
-	undelivered := n.delivered.earliestUnseen
+	undelivered := n.delivered.EarliestUnseen
 	n.mu.Unlock()
 	messageIDS := strconv.FormatUint(msg.ID, 10)
 	undeliveredS := strconv.FormatUint(undelivered, 10)
@@ -451,7 +437,7 @@ func (n *clusterNode) broadcastDelivered(msg message) {
 			go func(url string, body *bytes.Buffer) {
 				resp, err := httpPut(url, body)
 				if err != nil {
-					log.Printf("delivered had some errors , %v", err)
+					// log.Printf("delivered had some errors , %v", err)
 				} else {
 					resp.Body.Close()
 				}

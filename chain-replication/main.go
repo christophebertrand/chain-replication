@@ -60,7 +60,7 @@ func main() {
 	kvs = newKVStore(<-snapshotterReady, proposeC, sendMessageC)
 	node := newClusterNode(kvs, sendMessageC, confChangeC, successors, 10, cluster, *id-1)
 	// the key-value http handler will propose updates to raft
-	kvs.start(commitC, errorC)
+	go kvs.start(commitC, errorC)
 	port, err := strconv.ParseInt(strings.Split(cluster[*id-1], ":")[2], 10, 32)
 	if err != nil {
 		log.Fatal("could not parse port")

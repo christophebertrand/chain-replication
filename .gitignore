@@ -27,3 +27,4 @@ TODO.md
 .idea/
 chain-replication/persist/
 chain-replication/simplified-chain/persist/
+/automatedClients/automatedClients

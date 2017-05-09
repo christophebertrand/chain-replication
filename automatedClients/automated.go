@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -41,14 +42,14 @@ func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newClient(destPort, retPort int, t time.Duration, end chan<- bool) {
+func newClient(destPort, retPort int, t time.Duration, end chan<- time.Duration) {
 	ok := make(chan time.Time)
 	defer close(ok)
 	returnAddr := "http://127.0.0.1:" + strconv.Itoa(retPort)
 	createListener(retPort, ok)
 	timeout := make(chan bool, 1)
 	go func(t time.Duration) { //terminate client after t second
-		time.Sleep(t * time.Second)
+		time.Sleep(t)
 		timeout <- true
 	}(t)
 	var sendTime time.Time
@@ -57,16 +58,16 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- bool) {
 	for {
 		select {
 		case <-timeout:
-			fmt.Printf("average time to finish the execution is %v\n", totalDuration / time.Duration(numReq))
-			end <- true
+			fmt.Printf("average time to finish the execution is %v\n", totalDuration/time.Duration(numReq))
+			end <- totalDuration / time.Duration(numReq)
 			break
 		case receiveTime, open := <-ok:
 			if open {
-				if !receiveTime.Equal(time.Unix(0, 0)) {
+				if !receiveTime.Equal(time.Unix(0, 0)) { // this is the startup value
 					reqTime := receiveTime.Sub(sendTime)
 					totalDuration = reqTime + totalDuration
 					numReq++
-					fmt.Printf("time to respond %v\n ", reqTime)
+					//fmt.Printf("time to respond %v\n ", reqTime)
 				}
 				//time.Sleep(500 * time.Millisecond)
 				destAddr := "http://127.0.0.1:" + strconv.Itoa(destPort)
@@ -76,7 +77,7 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- bool) {
 				sendRequest(put, key, value, destAddr, returnAddr)
 			} else {
 				fmt.Println("terminiating client " + strconv.Itoa(retPort))
-				end <- true
+				end <- totalDuration / time.Duration(numReq)
 				return
 			}
 		}
@@ -98,20 +99,29 @@ func createListener(port int, ok chan<- time.Time) {
 }
 
 func main() {
-	numberClients := 50
+	//numberClients := 50
+	numberClientsP := flag.Int("clients", 50, "Amount of clients to run")
+	tmP := flag.Int("time", 10, "Time which the clients should run")
+	flag.Parse()
+	numberClients := *numberClientsP
+	tm := *tmP
 	destPrefix := 11380
-	t := time.Duration(10)
-	wait := make(chan bool)
+	t := time.Duration(tm) * time.Second
+	wait := make(chan time.Duration)
+	fmt.Printf("new simulation with %v clients during %v ", numberClients, t)
 	defer close(wait)
 	for client := 1; client <= numberClients; client++ {
-		fmt.Printf("new client %v \n", client)
+		//fmt.Printf("new client %v \n", client)
 		retPort := client + 40005
 		destPort := destPrefix + (client%3)*1000
 		go newClient(destPort, retPort, t, wait)
 	}
+	var totalDuration time.Duration
 	for i := 1; i <= numberClients; i++ {
-		<-wait
+		clientDuration := <-wait
+		totalDuration += clientDuration
 	}
+	fmt.Printf("the total average response time for all clients is %v\n", (totalDuration / time.Duration(numberClients)))
 }
 
 func sendRequest(method, key, value, destAddr, returnAddr string) {

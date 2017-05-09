@@ -35,15 +35,15 @@ type kvstore struct {
 }
 
 type store struct {
-	kv   map[string]string
-	seen MessageSet
+	Kv   map[string]string `json:"kv"`
+	Seen MessageSet        `json:"seen"`
 }
 
 func newStore() store {
 	return store{
-		kv: make(map[string]string),
+		Kv: make(map[string]string),
 		//earliestUnseen: 0,
-		seen: NewMessageSet(),
+		Seen: NewMessageSet(),
 	}
 }
 
@@ -96,7 +96,7 @@ func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, sendMess
 
 func (s *kvstore) Lookup(key string) (string, bool) {
 	s.mu.RLock()
-	v, ok := s.kvStore.kv[key]
+	v, ok := s.kvStore.Kv[key]
 	s.mu.RUnlock()
 	return v, ok
 }
@@ -142,8 +142,8 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 		if s.isNewMessage(msg) {
 			if msg.MsgType == NormalMessage {
 				s.mu.Lock()
-				s.kvStore.kv[msg.Key] = msg.Val
-				s.kvStore.seen.Add(msg.ID)
+				s.kvStore.Kv[msg.Key] = msg.Val
+				s.kvStore.Seen.Add(msg.ID)
 				s.mu.Unlock()
 			}
 			s.sendMessageC <- msg
@@ -168,6 +168,7 @@ func (s *kvstore) recoverFromSnapshot(snapshot []byte) error {
 	if err := json.Unmarshal(snapshot, &st); err != nil {
 		return err
 	}
+	log.Printf("recover from snapshot lenght of messageSet: %v, earliestUseen: %v ", len(st.Seen.Set), st.Seen.EarliestUnseen)
 	s.mu.Lock()
 	s.kvStore = st
 	s.mu.Unlock()
@@ -195,7 +196,7 @@ func encodeMessage(message message) []byte {
 func (s *kvstore) isNewMessage(message message) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.kvStore.seen.Contains(message.ID)
+	return !s.kvStore.Seen.Contains(message.ID)
 	//if message.MsgType == DummyMessage {
 	//	return true
 	//}
