@@ -21,6 +21,11 @@ type httphandler struct {
 	id int
 }
 
+type stats struct {
+	averageTime time.Duration
+	requests    int
+}
+
 //Listens to the responses of the kv store
 func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := r.RequestURI
@@ -42,7 +47,7 @@ func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newClient(destPort, retPort int, t time.Duration, end chan<- time.Duration) {
+func newClient(destPort, retPort int, t time.Duration, end chan<- stats) {
 	ok := make(chan time.Time)
 	defer close(ok)
 	returnAddr := "http://127.0.0.1:" + strconv.Itoa(retPort)
@@ -59,7 +64,7 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- time.Duration)
 		select {
 		case <-timeout:
 			fmt.Printf("average time to finish the execution is %v\n", totalDuration/time.Duration(numReq))
-			end <- totalDuration / time.Duration(numReq)
+			end <- stats{totalDuration / time.Duration(numReq), numReq}
 			break
 		case receiveTime, open := <-ok:
 			if open {
@@ -77,7 +82,7 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- time.Duration)
 				sendRequest(put, key, value, destAddr, returnAddr)
 			} else {
 				fmt.Println("terminiating client " + strconv.Itoa(retPort))
-				end <- totalDuration / time.Duration(numReq)
+				end <- stats{totalDuration / time.Duration(numReq), numReq}
 				return
 			}
 		}
@@ -107,7 +112,7 @@ func main() {
 	tm := *tmP
 	destPrefix := 11380
 	t := time.Duration(tm) * time.Second
-	wait := make(chan time.Duration)
+	wait := make(chan stats)
 	fmt.Printf("new simulation with %v clients during %v ", numberClients, t)
 	defer close(wait)
 	for client := 1; client <= numberClients; client++ {
@@ -117,11 +122,13 @@ func main() {
 		go newClient(destPort, retPort, t, wait)
 	}
 	var totalDuration time.Duration
+	var req int
 	for i := 1; i <= numberClients; i++ {
-		clientDuration := <-wait
-		totalDuration += clientDuration
+		stat := <-wait
+		req += stat.requests
+		totalDuration += stat.averageTime
 	}
-	fmt.Printf("the total average response time for all clients is %v\n", (totalDuration / time.Duration(numberClients)))
+	fmt.Printf("the total number of request was %v during %v with an average response time for all clients is %v\n", req, t, (totalDuration / time.Duration(numberClients)))
 }
 
 func sendRequest(method, key, value, destAddr, returnAddr string) {

@@ -394,7 +394,7 @@ func (n *clusterNode) sendToNextCluster(msg message) {
 			<-time.After(1 * time.Second)
 			i++
 			dest = n.successors[i%len(n.successors)].address
-			log.Printf("removing succ n %v with err %v", i, err)
+			//log.Printf("removing succ n %v with err %v", i, err)
 
 		} else {
 			if resp.StatusCode == http.StatusRequestTimeout {
