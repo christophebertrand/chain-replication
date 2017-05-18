@@ -52,3 +52,29 @@ func Test_kvstore_snapshot(t *testing.T) {
 	}
 	fmt.Print(s.kvStore.Seen)
 }
+
+// func Test_sendMessage(t *testing.T) {
+// 	proposeC := make(chan message) // kv -> raft
+// 	defer close(proposeC)
+// 	sendMessageC := make(chan message) //kv -> cluster
+// 	defer close(sendMessageC)
+//
+// 	commitC := make(chan *message) // raft -> kv
+// 	defer close(commitC)
+// 	errorC := make(chan error)
+// 	defer close(errorC)
+// 	kvs := newKVStore(&snap.Snapshotter{}, proposeC, sendMessageC)
+// 	go kvs.start(commitC, errorC)
+// 	msg0 := message{ID: 0, MsgType: NormalMessage, RetAddr: "test1"}
+// 	require.Equal(t, false, kvs.isNewMessage(msg0))
+// 	kvs.Propose("", "", "test1")
+// 	select {
+// 	case m := <-proposeC:
+// 		fmt.Println(m)
+// 	case <-time.After(1 * time.Second):
+// 		fmt.Println("timout")
+// 	}
+// 	// m := <-proposeC
+// 	// require.Equal(t, msg0, m)
+//
+// }
