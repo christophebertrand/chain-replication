@@ -3,6 +3,7 @@ package main
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -11,7 +12,7 @@ func Test_exponentialBackof(t *testing.T) {
 
 	tick := make(chan int)
 	success := make(chan bool)
-	go backOffTimer(tick, success, 10)
+	go backOffTimer(tick, success, 10, 50*time.Millisecond)
 
 	success <- true
 }

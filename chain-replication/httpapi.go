@@ -31,6 +31,11 @@ import (
 
 const raftTimeOut = 5 * time.Second
 
+type peers struct {
+	p map[string]bool
+	//active  bool
+	//address string
+}
 type peer struct {
 	active  bool
 	address string
@@ -269,6 +274,9 @@ func (n *clusterNode) processMessages() {
 					if !msg.Replay {
 						go n.sendToClient(msg)
 					}
+					if msg.MsgType == DummyMessage {
+						n.broadcastDelivered(msg)
+					}
 				} else {
 					go n.sendToNextCluster(msg)
 				}
@@ -277,17 +285,19 @@ func (n *clusterNode) processMessages() {
 	}
 }
 
-func backOffTimer(channel chan<- int, success <-chan bool, ticks int) {
-	for i, t := 1, 1; i <= ticks; i++ {
-		t *= 2
+// backOffTimer sends a tick through tickChan for the amount of ticks specified by numTicks
+// the timer stops ticking if it recieves a message from succes chan
+func backOffTimer(tickChan chan<- int, success <-chan bool, numTicks int, initial time.Duration) {
+	for i, t := 1, 1; i <= numTicks; i++ {
 		select {
-		case <-time.After(time.Duration(t) * time.Second):
-			channel <- i
+		case <-time.After(time.Duration(t) * initial):
+			t *= 2
+			tickChan <- i
 		case <-success:
-			i = ticks
+			i = numTicks
 		}
 	}
-	close(channel)
+	close(tickChan)
 }
 
 //sendToClient sends an acknowledgement to the client that the message has been recieved.
@@ -297,7 +307,7 @@ func (n *clusterNode) sendToClient(msg message) {
 	// log.Printf("I am sending message " + msg.String() + " to the client")
 	tick := make(chan int)
 	success := make(chan bool)
-	go backOffTimer(tick, success, 5)
+	go backOffTimer(tick, success, 5, 50*time.Millisecond)
 	retAddr := msg.RetAddr + "/" + strconv.Itoa(int(msg.ID)) + "_" + msg.Val
 	for {
 		body := bytes.NewBufferString(strconv.Itoa(int(msg.ID)))
@@ -311,7 +321,10 @@ func (n *clusterNode) sendToClient(msg message) {
 				break
 			}
 		} else {
-			success <- true
+			func() {
+				success <- true
+				close(success)
+			}()
 			n.broadcastDelivered(msg)
 			resp.Body.Close()
 			break
@@ -370,30 +383,74 @@ func (n *clusterNode) broadcastDelivered(msg message) {
 	n.mu.Lock()
 	undelivered := n.delivered.EarliestUnseen
 	n.mu.Unlock()
+	n.messageDelivered(msg.ID, undelivered)
+	n.mu.Lock()
+	undelivered = n.delivered.EarliestUnseen
+	n.mu.Unlock()
 	messageIDS := strconv.FormatUint(msg.ID, 10)
 	undeliveredS := strconv.FormatUint(undelivered, 10)
-	n.messageDelivered(msg.ID, undelivered)
-	for _, peer := range n.peers {
-		if peer.active {
-			body := bytes.NewBufferString(messageIDS + "/" + undeliveredS)
-			url := peer.address + "/" + "delivered"
-			go func(url string, body *bytes.Buffer) {
-				resp, err := httpPut(url, body)
-				if err != nil {
-					// log.Printf("delivered had some errors , %v", err)
-				} else {
-					resp.Body.Close()
-				}
-			}(url, body)
+	bodyS := messageIDS + "/" + undeliveredS
+	for i, p := range n.peers {
+		if i != n.ID {
+			if p.active {
+				path := "/delivered"
+				go n.sentToPeer(p, path, bodyS)
+			}
 		}
 	}
+}
+
+func (n *clusterNode) sentToPeer(peer *peer, path string, bodyS string) {
+	tick := make(chan int)
+	success := make(chan bool)
+	go backOffTimer(tick, success, 5, 100*time.Millisecond)
+	url := peer.address + path
+	for {
+		body := bytes.NewBufferString(bodyS)
+		resp, err := httpPut(url, body)
+		if err != nil {
+			_, ok := <-tick
+			if !ok { // tick is close which means the backOffTimer has reach the max value
+				n.removePeer(peer)
+				log.Printf("could not send to peer %v considering peer has failed %v\n", url, err)
+				break
+			}
+		} else {
+			go func() {
+				<-success
+				close(success)
+			}()
+			resp.Body.Close()
+			break
+		}
+	}
+}
+
+func (n *clusterNode) removePeer(peer *peer) {
+	// peer.active = false
+	// for _, p := range n.peers {
+	// 	if p.active {
+	// 		path := "/peer/failed"
+	// 		go n.sentToPeer(p, path, peer.address)
+	// 	}
+	// }
+}
+
+func (n *clusterNode) addPeer(peer *peer) {
+	// peer.active = true
+	// for _, p := range n.peers {
+	// 	if p.active {
+	// 		path := "/peer/recovered"
+	// 		go n.sentToPeer(p, path, peer.address)
+	// 	}
+	// }
 }
 
 //messageDelivered removes msg from the toDeliver s and adds it to delivered with compaction
 func (n *clusterNode) messageDelivered(msgID uint64, earliestUndelivered uint64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.delivered.AddUntil(earliestUndelivered)
 	n.delivered.Add(msgID)
+	n.delivered.AddUntil(earliestUndelivered)
 	delete(n.toDeliver, msgID)
 }

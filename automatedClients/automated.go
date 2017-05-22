@@ -26,6 +26,40 @@ type stats struct {
 	requests    int
 }
 
+func main() {
+	//numberClients := 50
+	numberClientsP := flag.Int("clients", 50, "Amount of clients to run")
+	tmP := flag.Int("time", 10, "Time which the clients should run")
+	oneP := flag.Bool("one", false, "set to true if you want to send only one req")
+	flag.Parse()
+	numberClients := *numberClientsP
+	tm := *tmP
+	one := *oneP
+	if one {
+		numberClients = 1
+		tm = 1
+	}
+	destPrefix := 11380
+	t := time.Duration(tm) * time.Second
+	wait := make(chan stats)
+	fmt.Printf("new simulation with %v clients during %v ", numberClients, t)
+	defer close(wait)
+	for client := 1; client <= numberClients; client++ {
+		//fmt.Printf("new client %v \n", client)
+		retPort := client + 40005
+		destPort := destPrefix + (client%3)*1000
+		go newClient(destPort, retPort, t, wait, one)
+	}
+	var totalDuration time.Duration
+	var req int
+	for i := 1; i <= numberClients; i++ {
+		stat := <-wait
+		req += stat.requests
+		totalDuration += stat.averageTime
+	}
+	fmt.Printf("the total number of request was %v during %v with an average response time for all clients is %v\n", req, t, (totalDuration / time.Duration(numberClients)))
+}
+
 //Listens to the responses of the kv store
 func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := r.RequestURI
@@ -47,7 +81,7 @@ func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newClient(destPort, retPort int, t time.Duration, end chan<- stats) {
+func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq bool) {
 	ok := make(chan time.Time)
 	defer close(ok)
 	returnAddr := "http://127.0.0.1:" + strconv.Itoa(retPort)
@@ -72,6 +106,10 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- stats) {
 					reqTime := receiveTime.Sub(sendTime)
 					totalDuration = reqTime + totalDuration
 					numReq++
+					if oneReq {
+						end <- stats{totalDuration, numReq}
+						return
+					}
 					//fmt.Printf("time to respond %v\n ", reqTime)
 				}
 				//time.Sleep(500 * time.Millisecond)
@@ -101,34 +139,6 @@ func createListener(port int, ok chan<- time.Time) {
 			close(ok)
 		}
 	}()
-}
-
-func main() {
-	//numberClients := 50
-	numberClientsP := flag.Int("clients", 50, "Amount of clients to run")
-	tmP := flag.Int("time", 10, "Time which the clients should run")
-	flag.Parse()
-	numberClients := *numberClientsP
-	tm := *tmP
-	destPrefix := 11380
-	t := time.Duration(tm) * time.Second
-	wait := make(chan stats)
-	fmt.Printf("new simulation with %v clients during %v ", numberClients, t)
-	defer close(wait)
-	for client := 1; client <= numberClients; client++ {
-		//fmt.Printf("new client %v \n", client)
-		retPort := client + 40005
-		destPort := destPrefix + (client%3)*1000
-		go newClient(destPort, retPort, t, wait)
-	}
-	var totalDuration time.Duration
-	var req int
-	for i := 1; i <= numberClients; i++ {
-		stat := <-wait
-		req += stat.requests
-		totalDuration += stat.averageTime
-	}
-	fmt.Printf("the total number of request was %v during %v with an average response time for all clients is %v\n", req, t, (totalDuration / time.Duration(numberClients)))
 }
 
 func sendRequest(method, key, value, destAddr, returnAddr string) {

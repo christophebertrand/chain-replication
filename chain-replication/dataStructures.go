@@ -11,14 +11,15 @@ func NewMessageSet() MessageSet {
 }
 
 func (s *MessageSet) Add(msgID uint64) {
-	// s.mu.Lock()
-	// defer s.mu.Unlock()
+	if msgID < s.EarliestUnseen {
+		return
+	}
 	if msgID == s.EarliestUnseen {
 		s.EarliestUnseen++
 		maxRange := s.EarliestUnseen + uint64(s.size())
 		for i := s.EarliestUnseen; i < maxRange; i++ {
 			if s.Contains(i) {
-				delete(s.Set, msgID)
+				delete(s.Set, i)
 				s.EarliestUnseen++
 			} else {
 				return
@@ -31,6 +32,9 @@ func (s *MessageSet) Add(msgID uint64) {
 
 //AddUntil adds id from 0 to msgID (msgID excluded) to the set
 func (s *MessageSet) AddUntil(msgID uint64) {
+	if s.EarliestUnseen > msgID {
+		return
+	}
 	// s.mu.Lock()
 	// defer s.mu.Unlock()
 	for i := s.EarliestUnseen; i < msgID; i++ {
