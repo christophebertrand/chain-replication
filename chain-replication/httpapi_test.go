@@ -26,24 +26,24 @@ func Test_responsible(t *testing.T) {
 	}
 	var peers []*peer
 	for i := 0; i < l; i++ {
-		p := peer{true, strconv.Itoa(i)}
+		p := peer{i, strconv.Itoa(i), true}
 		peers = append(peers, &p)
 	}
 
 	for i := 0; i < l; i++ {
-		_, x := findResponsible(msg[i], peers)
-		require.Equal(t, i, x)
+		x := findResponsible(msg[i], peers)
+		require.Equal(t, i, x.ID)
 	}
 	peers[3].active = false
 	exprected := []int{0, 1, 2, 4, 5, 6, 7, 8, 9, 0}
 	for i := 0; i < l; i++ {
-		_, x := findResponsible(msg[i], peers)
-		require.Equal(t, exprected[i], x)
+		x := findResponsible(msg[i], peers)
+		require.Equal(t, exprected[i], x.ID)
 	}
 	peers[5].active = false
 	exprected = []int{0, 1, 2, 4, 6, 7, 8, 9, 0, 1}
 	for i := 0; i < l; i++ {
-		_, x := findResponsible(msg[i], peers)
-		require.Equal(t, exprected[i], x)
+		x := findResponsible(msg[i], peers)
+		require.Equal(t, exprected[i], x.ID)
 	}
 }

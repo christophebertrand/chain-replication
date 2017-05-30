@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"sync"
 
+	"fmt"
+
 	"github.com/coreos/etcd/snap"
 )
 
@@ -35,15 +37,24 @@ type kvstore struct {
 }
 
 type store struct {
-	Kv   map[string]string `json:"kv"`
-	Seen MessageSet        `json:"seen"`
+	Kv map[string]value `json:"kv"`
+	// Seen MessageSet        `json:"seen"`
+}
+
+type value struct {
+	Val string `json:"val"`
+	Ts  uint64 `json:"ts"`
+}
+type keyValue struct {
+	Key string `json:"key"`
+	Val value  `json:"val"`
 }
 
 func newStore() store {
 	return store{
-		Kv: make(map[string]string),
+		Kv: make(map[string]value),
 		//earliestUnseen: 0,
-		Seen: NewMessageSet(),
+		// Seen: NewMessageSet(),
 	}
 }
 
@@ -77,11 +88,15 @@ func (m message) String() string {
 	return "MessageID: " + id + " dummy"
 }
 
-func (s *kvstore) start(commitC <-chan *message, errorC <-chan error) {
+func (s *kvstore) start(commitC <-chan *message, errorC <-chan error) (recover bool) {
 	// replay log into key-value map
-	s.readCommits(commitC, errorC)
+	fmt.Println("gogogo")
+
+	recover = s.readCommits(commitC, errorC)
+	fmt.Println("gogogo")
 	// read commits from raft into kvStore map until error
 	go s.readCommits(commitC, errorC)
+	return
 }
 
 func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, sendMessageC chan<- message) *kvstore {
@@ -94,11 +109,11 @@ func newKVStore(snapshotter *snap.Snapshotter, proposeC chan<- message, sendMess
 	return s
 }
 
-func (s *kvstore) Lookup(key string) (string, bool) {
+func (s *kvstore) Lookup(key string) (string, uint64, bool) {
 	s.mu.RLock()
 	v, ok := s.kvStore.Kv[key]
 	s.mu.RUnlock()
-	return v, ok
+	return v.Val, v.Ts, ok
 }
 
 func (s *kvstore) Propagate(msg message) {
@@ -116,14 +131,15 @@ func (s *kvstore) Propose(k string, v string, retAddr string) {
 	s.proposeC <- msg
 }
 
-func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
+func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) bool {
+	recover := false
 	for data := range commitC {
 		if data == nil {
 			// done replaying log; new data incoming
 			// OR signaled to load snapshot
 			snapshot, err := s.snapshotter.Load()
 			if err == snap.ErrNoSnapshot {
-				return
+				return recover
 			}
 			if err != nil && err != snap.ErrNoSnapshot {
 				log.Panic(err)
@@ -132,29 +148,35 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) {
 			if err := s.recoverFromSnapshot(snapshot.Data); err != nil {
 				log.Panic(err)
 			}
-			continue
+			return recover
 		}
+		recover = true
 		msg := *data
-
-		//if msg.ID == 1 {
-		//	log.Printf("raft applied " + msg.String() )
-		//}
-		if s.isNewMessage(msg) {
-			if msg.MsgType == NormalMessage {
-				s.mu.Lock()
-				s.kvStore.Kv[msg.Key] = msg.Val
-				s.kvStore.Seen.Add(msg.ID)
-				s.mu.Unlock()
+		if msg.MsgType == NormalMessage {
+			s.mu.Lock()
+			v := s.kvStore.Kv[msg.Key]
+			if v.Ts < msg.ID {
+				s.kvStore.Kv[msg.Key] = value{msg.Val, msg.ID}
 			}
-			s.sendMessageC <- msg
-			//if msg.ID == 1 {
-			//	log.Printf("sent to http " + msg.String() )
-			//}
+			s.mu.Unlock()
 		}
+		//send message to httpAPI
+		s.sendMessageC <- msg
 	}
+	fmt.Println("exit")
 	if err, ok := <-errorC; ok {
 		log.Fatal(err)
 	}
+	return false
+}
+
+func (s *kvstore) write(msg message) {
+	s.mu.Lock()
+	v := s.kvStore.Kv[msg.Key]
+	if v.Ts < msg.ID {
+		s.kvStore.Kv[msg.Key] = value{msg.Val, msg.ID}
+	}
+	s.mu.Unlock()
 }
 
 func (s *kvstore) getSnapshot() ([]byte, error) {
@@ -168,7 +190,6 @@ func (s *kvstore) recoverFromSnapshot(snapshot []byte) error {
 	if err := json.Unmarshal(snapshot, &st); err != nil {
 		return err
 	}
-	log.Printf("recover from snapshot lenght of messageSet: %v, earliestUseen: %v ", len(st.Seen.Set), st.Seen.EarliestUnseen)
 	s.mu.Lock()
 	s.kvStore = st
 	s.mu.Unlock()
@@ -193,17 +214,8 @@ func encodeMessage(message message) []byte {
 	return buf.Bytes()
 }
 
-func (s *kvstore) isNewMessage(message message) bool {
+func (s *kvstore) isNewMessage(msg message) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.kvStore.Seen.Contains(message.ID)
-	//if message.MsgType == DummyMessage {
-	//	return true
-	//}
-	//oldValue := s.kvStore[message.Key]
-	////check if message has already been delivered once
-	//if oldValue.MessageID < message.Val.MessageID {
-	//	return true
-	//}
-	//return false
+	return s.kvStore.Kv[msg.Key].Ts < msg.ID
 }

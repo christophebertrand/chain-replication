@@ -75,7 +75,7 @@ type raftNode struct {
 	first bool //is true iff the node is in the first cluster
 }
 
-var defaultSnapCount uint64 = 10000
+var defaultSnapCount uint64 = 10
 
 // newRaftNode initiates a raft instance and returns a committed log entry
 // channel and error channel. Proposals for log updates are sent over the
@@ -392,7 +392,7 @@ func (rc *raftNode) publishSnapshot(snapshotToSave raftpb.Snapshot) {
 	rc.appliedIndex = snapshotToSave.Metadata.Index
 }
 
-var snapshotCatchUpEntriesN uint64 = 10000
+var snapshotCatchUpEntriesN uint64 = 10
 
 func (rc *raftNode) maybeTriggerSnapshot() {
 	if rc.appliedIndex-rc.snapshotIndex <= rc.snapCount {

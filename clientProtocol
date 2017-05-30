@@ -11,6 +11,7 @@ Event <'RaftDeliver', msg> done
     toDeliver += msg
     resp := responsible(msg, activePeers)
     if resp == self:
+      commitToPeers(msg)
       sendToClient(msg)
 
 Event <'delivered', msg, from> done
@@ -24,6 +25,10 @@ Event <'timeout', p: peer>
   for msg := range toDeliver:
     if self == responsible(msg, activePeers):
       sendToClient(msg)
+
+Event <GET, key > :
+  value, ts := store.Lookup(key)
+  broadcastValue(key, value, ts)
 
 Periodically send heartbeat or piggyback on raft.
 
@@ -41,4 +46,3 @@ def responsible(msg, activePeers): done
 def crashRecovery:
     read ToDeliver, delivered from
 #  ToDeliver, delivered = askPeer for their state
-

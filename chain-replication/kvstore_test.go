@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_encodingMessage(t *testing.T) {
@@ -22,14 +22,14 @@ func Test_encodingMessage(t *testing.T) {
 }
 
 func Test_kvstore_snapshot(t *testing.T) {
-	tm := map[string]string{"foo": "bar"}
+	tm := map[string]value{"foo": value{"bar", 0}}
 	seenset := NewMessageSet()
 	seenset.Add(10)
 	seenset.AddUntil(5)
-	st := store{Kv: tm, Seen: seenset}
+	st := store{Kv: tm}
 	s := &kvstore{kvStore: st}
 
-	v, _ := s.Lookup("foo")
+	v, _, _ := s.Lookup("foo")
 	if v != "bar" {
 		t.Fatalf("foo has unexpected value, got %s", v)
 	}
@@ -43,14 +43,28 @@ func Test_kvstore_snapshot(t *testing.T) {
 	if err := s.recoverFromSnapshot(data); err != nil {
 		t.Fatal(err)
 	}
-	v, _ = s.Lookup("foo")
+	v, _, _ = s.Lookup("foo")
 	if v != "bar" {
 		t.Fatalf("foo has unexpected value, got %s", v)
 	}
 	if !reflect.DeepEqual(s.kvStore, st) {
 		t.Fatalf("store expected %+v, got %+v", st, s.kvStore)
 	}
-	fmt.Print(s.kvStore.Seen)
+}
+func Test_kvstore_lookup(t *testing.T) {
+	tm := map[string]value{"foo": value{"bar", 1}}
+	st := store{Kv: tm}
+	s := &kvstore{kvStore: st}
+
+	v, ts, ok := s.Lookup("foo")
+	require.Equal(t, "bar", v)
+	require.Equal(t, uint64(1), ts)
+	require.Equal(t, true, ok)
+	v, ts, ok = s.Lookup("foo2")
+
+	require.Equal(t, "", v)
+	require.Equal(t, uint64(0), ts)
+	require.Equal(t, false, ok)
 }
 
 // func Test_sendMessage(t *testing.T) {

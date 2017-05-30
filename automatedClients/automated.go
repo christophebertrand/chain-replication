@@ -22,8 +22,8 @@ type httphandler struct {
 }
 
 type stats struct {
-	averageTime time.Duration
-	requests    int
+	total    time.Duration
+	requests int
 }
 
 func main() {
@@ -55,30 +55,9 @@ func main() {
 	for i := 1; i <= numberClients; i++ {
 		stat := <-wait
 		req += stat.requests
-		totalDuration += stat.averageTime
+		totalDuration += stat.total
 	}
-	fmt.Printf("the total number of request was %v during %v with an average response time for all clients is %v\n", req, t, (totalDuration / time.Duration(numberClients)))
-}
-
-//Listens to the responses of the kv store
-func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	id := r.RequestURI
-
-	id = strings.TrimPrefix(id, "/")
-	// fmt.Println("recieved ok at " + strconv.Itoa(h.id))
-	switch {
-	case r.Method == put:
-		_, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("Failed to read on PUT (%v)\n", err)
-			http.Error(w, "Failed on PUT", http.StatusBadRequest)
-			return
-		}
-		h.ok <- time.Now()
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-
-	}
+	fmt.Printf("the total number of request was %v during %v with an total duration %v time for all clients\n", req, t, totalDuration)
 }
 
 func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq bool) {
@@ -97,8 +76,8 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq 
 	for {
 		select {
 		case <-timeout:
-			fmt.Printf("average time to finish the execution is %v\n", totalDuration/time.Duration(numReq))
-			end <- stats{totalDuration / time.Duration(numReq), numReq}
+			fmt.Printf("finished %v requests in  %v time \n", numReq, totalDuration)
+			end <- stats{totalDuration, numReq}
 			break
 		case receiveTime, open := <-ok:
 			if open {
@@ -114,9 +93,10 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq 
 				}
 				//time.Sleep(500 * time.Millisecond)
 				destAddr := "http://127.0.0.1:" + strconv.Itoa(destPort)
-				key := strconv.Itoa(rand.Int())
-				value := key
+				key := strconv.Itoa(numReq)
+				value := strconv.Itoa(rand.Int())
 				sendTime = time.Now()
+				fmt.Printf("%v sending  \n ", retPort)
 				sendRequest(put, key, value, destAddr, returnAddr)
 			} else {
 				fmt.Println("terminiating client " + strconv.Itoa(retPort))
@@ -125,20 +105,6 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq 
 			}
 		}
 	}
-}
-
-func createListener(port int, ok chan<- time.Time) {
-	srv := http.Server{
-		Addr:    ":" + strconv.Itoa(port),
-		Handler: &httphandler{ok, port},
-	}
-	go func() {
-		ok <- time.Unix(0, 0) //for startup
-		if err := srv.ListenAndServe(); err != nil {
-			fmt.Println(err)
-			close(ok)
-		}
-	}()
 }
 
 func sendRequest(method, key, value, destAddr, returnAddr string) {
@@ -163,6 +129,41 @@ func sendRequest(method, key, value, destAddr, returnAddr string) {
 			return
 		}
 		fmt.Println(key + " has value: " + string(v))
+
+	}
+}
+
+func createListener(port int, ok chan<- time.Time) {
+	srv := http.Server{
+		Addr:    ":" + strconv.Itoa(port),
+		Handler: &httphandler{ok, port},
+	}
+	go func() {
+		ok <- time.Unix(0, 0) //for startup
+		if err := srv.ListenAndServe(); err != nil {
+			fmt.Println(err)
+			close(ok)
+		}
+	}()
+}
+
+//Listens to the responses of the kv store
+func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	id := r.RequestURI
+	id = strings.TrimPrefix(id, "/")
+	// fmt.Println("recieved ok at " + strconv.Itoa(h.id))
+	switch {
+	case r.Method == put:
+		s, err := ioutil.ReadAll(r.Body)
+		fmt.Printf("%v new message %v \n", h.id, string(s))
+		if err != nil {
+			log.Printf("Failed to read on PUT (%v)\n", err)
+			http.Error(w, "Failed on PUT", http.StatusBadRequest)
+			return
+		}
+		h.ok <- time.Now()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 
 	}
 }

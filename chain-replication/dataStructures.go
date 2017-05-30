@@ -1,5 +1,14 @@
 package main
 
+type intMessage struct {
+	I int `json:"i"`
+}
+
+type deliveredMessage struct {
+	ID    uint64 `json:"id"`
+	Undel uint64 `json:"undel"`
+}
+
 type MessageSet struct {
 	Set            map[uint64]struct{} `json:"set"`
 	EarliestUnseen uint64              `json:"earliest"`
