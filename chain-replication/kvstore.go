@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"sync"
 
-	"fmt"
-
 	"github.com/coreos/etcd/snap"
 )
 
@@ -53,16 +51,18 @@ type keyValue struct {
 func newStore() store {
 	return store{
 		Kv: make(map[string]value),
-		//earliestUnseen: 0,
-		// Seen: NewMessageSet(),
 	}
 }
 
+//MessageType is a type to distinguish normal messages from dummy messages
 type MessageType int32
 
 const (
+	//NormalMessage is the type of the message if the message is a message from a client
 	NormalMessage MessageType = 0
-	DummyMessage  MessageType = 1
+	//DummyMessage is the type of the message if the message was created by raft
+	//  and is needed to compact the MessageSet
+	DummyMessage MessageType = 1
 )
 
 type message struct {
@@ -90,10 +90,7 @@ func (m message) String() string {
 
 func (s *kvstore) start(commitC <-chan *message, errorC <-chan error) (recover bool) {
 	// replay log into key-value map
-	fmt.Println("gogogo")
-
 	recover = s.readCommits(commitC, errorC)
-	fmt.Println("gogogo")
 	// read commits from raft into kvStore map until error
 	go s.readCommits(commitC, errorC)
 	return
@@ -117,9 +114,6 @@ func (s *kvstore) Lookup(key string) (string, uint64, bool) {
 }
 
 func (s *kvstore) Propagate(msg message) {
-	//if msg.ID == 1 {
-	//	log.Printf("I propagating " + msg.String() + " from pred")
-	//}
 	if s.isNewMessage(msg) {
 		s.proposeC <- msg
 	}
@@ -163,7 +157,6 @@ func (s *kvstore) readCommits(commitC <-chan *message, errorC <-chan error) bool
 		//send message to httpAPI
 		s.sendMessageC <- msg
 	}
-	fmt.Println("exit")
 	if err, ok := <-errorC; ok {
 		log.Fatal(err)
 	}

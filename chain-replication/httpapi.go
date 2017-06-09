@@ -16,11 +16,10 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
-	// "net"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,7 +62,6 @@ type clusterNode struct {
 }
 
 func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- raftpb.ConfChange, successors []string, maxPeers int, addresses []string, ID int) *clusterNode {
-	//TODO check implicit ordering of peers (match to ids of peers)
 	s := make([]*peer, len(successors))
 	for i, succ := range successors {
 		s[i] = &peer{i, succ, true}
@@ -73,9 +71,8 @@ func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- r
 		peers[i] = &peer{i, addr, true}
 	}
 	c := clusterNode{
-		store:       kv,
-		confChangeC: confChangeC,
-		//earliestUndelivered: uint64(1),
+		store:        kv,
+		confChangeC:  confChangeC,
 		delivered:    NewMessageSet(),
 		toDeliver:    make(map[uint64]message),
 		newMessage:   newMessage,
@@ -89,6 +86,9 @@ func newClusterNode(kv *kvstore, newMessage <-chan message, confChangeC chan<- r
 		// that the msg took to long and appliedChan has been closed
 	}
 	go c.processMessages()
+	go c.heartbeats(c.successors, 2*time.Second)
+	go c.heartbeats(c.peers, 1*time.Second)
+
 	return &c
 }
 
@@ -121,7 +121,6 @@ func (n *clusterNode) processPredMsg(split []string, body []byte, w http.Respons
 	del := n.delivered.Contains(msg.ID)
 	_, toDel := n.toDeliver[msg.ID]
 	n.mu.Unlock()
-	// log.Printf("message from pred " + msg.String())
 	//the message has already been applied by raft
 	if del || toDel {
 		w.WriteHeader(http.StatusOK)
@@ -166,10 +165,6 @@ func (n *clusterNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key = strings.TrimPrefix(key, "/")
 	switch {
 	case r.Method == "PUT":
-		// PUT method has:
-		//-RequestURI = "" 					 and body = "message" 										if it is a message from pred
-		//-RequestURI = "delivered"  and body = "MsgID/earliestUndelivered" 		if it is a Delivered msg
-		//-RequestURI = "key/value"  and body = "returnAddr" 									if it is a new message from client
 		split := strings.Split(key, "/")
 		key = split[0]
 		body, err := ioutil.ReadAll(r.Body)
@@ -272,13 +267,7 @@ func httpSend(method string, urlStr string, body io.Reader) (*http.Response, err
 // or send an acknowledgement to the client
 func (n *clusterNode) processMessages() {
 	for msg := range n.newMessage {
-		fmt.Println("new message ", msg)
-		n.mu.Lock()
-		fmt.Println(n.delivered)
-		fmt.Println(n.toDeliver)
-		n.mu.Unlock()
 		//send notification to pred that msg has arrived
-		// fmt.Println("message from raft has arrrived ", msg)
 		go func(msg message) {
 			n.mu.Lock()
 			del := n.delivered.Contains(msg.ID)
@@ -297,8 +286,6 @@ func (n *clusterNode) processMessages() {
 				}
 			}
 		}(msg)
-		resp := findResponsible(msg, n.peers)
-		// fmt.Printf("responsible is for message %v is %v,\n the peers are %v\n I am %v\n", msg, resp.ID, n.peers, n.ID)
 		n.mu.Lock()
 		areadyDelivered := n.delivered.Contains(msg.ID)
 		n.mu.Unlock()
@@ -307,7 +294,7 @@ func (n *clusterNode) processMessages() {
 			n.mu.Lock()
 			n.toDeliver[msg.ID] = msg
 			n.mu.Unlock()
-			if n.ID == resp.ID {
+			if n.isResponsible(msg) {
 				//we are at the tail and need to send the message to the client
 				if len(n.successors) == 0 {
 					if !msg.Replay {
@@ -343,7 +330,6 @@ func backOffTimer(tickChan chan<- int, success <-chan bool, numTicks int, initia
 //it also notifies the peers that the message has been delivered
 func (n *clusterNode) sendToClient(msg message) {
 	// returnAddr:port/msgID_Value
-	// log.Printf("I am sending message " + msg.String() + " to the client")
 	tick := make(chan int)
 	success := make(chan bool)
 	go backOffTimer(tick, success, 5, 50*time.Millisecond)
@@ -355,7 +341,6 @@ func (n *clusterNode) sendToClient(msg message) {
 			_, ok := <-tick
 			if !ok { // tick is close which means the backOffTimer has reach the max value
 				log.Printf("could not send to client %v", err)
-				//TODO can we consider the message delivered?
 				n.broadcastDelivered(msg)
 				break
 			}
@@ -373,15 +358,14 @@ func (n *clusterNode) sendToClient(msg message) {
 }
 
 func (n *clusterNode) sendToNextCluster(msg message) {
-	// log.Printf("I am sending message " + msg.String() + " to next cluster")
 	buf := encodeMessage(msg)
-	next := findResponsible(msg, n.successors)
+	next := n.next(msg)
 	for {
 		resp, err := httpSend("PUT", next.address, bytes.NewBuffer(buf))
 		if err != nil {
 			log.Printf("failed to send to succ")
 			next.active = false
-			other := findResponsible(msg, n.successors)
+			other := n.next(msg)
 			if next == other {
 				panic("nope")
 			}
@@ -398,18 +382,19 @@ func (n *clusterNode) sendToNextCluster(msg message) {
 	}
 }
 
-func findResponsible(msg message, cluster []*peer) *peer {
-	var activeNodesIndexes []int
-	for i, node := range cluster {
-		if node.active {
-			activeNodesIndexes = append(activeNodesIndexes, i)
+func (n *clusterNode) isResponsible(msg message) bool {
+	r := responsible(msg, len(n.peers))
+	if r == n.ID {
+		return true
+	}
+	for i := r; i < len(n.peers)+r; i++ {
+		if n.peers[i%len(n.peers)].active && i != n.ID {
+			return false
+		} else if i == n.ID {
+			return true
 		}
 	}
-	if len(activeNodesIndexes) == 0 {
-		log.Printf("warning: no more active notes in cluster")
-	}
-	respIndex := activeNodesIndexes[responsible(msg, len(activeNodesIndexes))]
-	return cluster[respIndex]
+	return true
 }
 
 //responsible computes which peer, among the active peers, is responsible to send the message
@@ -418,9 +403,22 @@ func responsible(msg message, peerLength int) int {
 	return int(r)
 }
 
+func (n *clusterNode) next(msg message) *peer {
+	var activeNodesIndexes []int
+	for i, node := range n.successors {
+		if node.active {
+			activeNodesIndexes = append(activeNodesIndexes, i)
+		}
+	}
+	if len(activeNodesIndexes) == 0 {
+		log.Printf("warning: no more active notes in cluster")
+	}
+	respIndex := activeNodesIndexes[responsible(msg, len(activeNodesIndexes))]
+	return n.successors[respIndex]
+}
+
 //broadcastDelivered send a message to all peers of the node that msg has been delivered to the next entity (cluster or client)
 func (n *clusterNode) broadcastDelivered(msg message) {
-	fmt.Println("delivered ", msg)
 	n.messageDelivered(msg.ID, 0)
 	n.mu.Lock()
 	undelivered := n.delivered.EarliestUnseen
@@ -444,12 +442,9 @@ func (n *clusterNode) broadcast(action string, msg interface{}) {
 			}(done, p)
 		}
 	}
-	for i := 0; i < (len(n.peers)); i++ {
+	for i := 0; i < (len(n.peers)+1)/2; i++ {
 		<-done
 	}
-	// for i := 0; i < (len(n.peers)+1)/2; i++ {
-	// 	<-done
-	// }
 }
 
 func (n *clusterNode) sentToPeer(peer *peer, path string, body interface{}) {
@@ -492,7 +487,7 @@ func (n *clusterNode) getHighest(key string) (string, uint64, bool) {
 	var result response
 	var resps = make(chan response)
 	for i, p := range n.peers {
-		go func(i int, done chan<- response) {
+		go func(i int, done chan<- response, p *peer) {
 			if i == n.ID {
 				v, ts, ok := n.store.Lookup(key)
 				done <- response{value{v, ts}, ok}
@@ -519,7 +514,7 @@ func (n *clusterNode) getHighest(key string) (string, uint64, bool) {
 					}
 				}
 			}
-		}(i, resps)
+		}(i, resps, p)
 	}
 	for i := 0; i < (len(n.peers)/2)+1; i++ {
 		r := <-resps
@@ -531,8 +526,19 @@ func (n *clusterNode) getHighest(key string) (string, uint64, bool) {
 }
 
 func (n *clusterNode) removePeer(inactivePeer *peer) {
-	log.Printf("removing peer %v\n", inactivePeer)
+	if !inactivePeer.active {
+		return
+	}
 	inactivePeer.active = false
+	for _, msg := range n.toDeliver {
+		if n.isResponsible(msg) {
+			if len(n.successors) == 0 {
+				n.sendToClient(msg)
+			} else {
+				n.sendToNextCluster(msg)
+			}
+		}
+	}
 }
 
 func (n *clusterNode) addPeer(newPeer *peer) {
@@ -546,4 +552,27 @@ func (n *clusterNode) messageDelivered(msgID uint64, earliestUndelivered uint64)
 	n.delivered.Add(msgID)
 	n.delivered.AddUntil(earliestUndelivered)
 	delete(n.toDeliver, msgID)
+}
+
+func (n *clusterNode) heartbeats(cluster peerStatus, t time.Duration) {
+	time.Sleep(1 * time.Second)
+	for _, p := range cluster {
+		go n.heartbeat(p, t)
+	}
+}
+
+func (n *clusterNode) heartbeat(p *peer, t time.Duration) {
+	address := p.address
+	split := (strings.Split(address, "/"))
+	address = split[len(split)-1]
+	for {
+		time.Sleep(t)
+		conn, err := net.DialTimeout("tcp", address, 30*time.Millisecond)
+		if err != nil {
+			n.removePeer(p)
+		} else {
+			n.addPeer(p)
+			conn.Close()
+		}
+	}
 }

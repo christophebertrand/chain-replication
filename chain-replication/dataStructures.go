@@ -9,16 +9,18 @@ type deliveredMessage struct {
 	Undel uint64 `json:"undel"`
 }
 
+//MessageSet is a set of messages
 type MessageSet struct {
 	Set            map[uint64]struct{} `json:"set"`
 	EarliestUnseen uint64              `json:"earliest"`
-	// mu             sync.RWMutex
 }
 
+//NewMessageSet returns a new empty messageSet
 func NewMessageSet() MessageSet {
 	return MessageSet{Set: make(map[uint64]struct{}), EarliestUnseen: 1}
 }
 
+//Add adds a new message to the set and compacts the set if possible
 func (s *MessageSet) Add(msgID uint64) {
 	if msgID < s.EarliestUnseen {
 		return
@@ -44,27 +46,18 @@ func (s *MessageSet) AddUntil(msgID uint64) {
 	if s.EarliestUnseen > msgID {
 		return
 	}
-	// s.mu.Lock()
-	// defer s.mu.Unlock()
 	for i := s.EarliestUnseen; i < msgID; i++ {
 		delete(s.Set, i)
 	}
 	s.EarliestUnseen = msgID
 }
 
+//Contains returns true iff the set contains the message id
 func (s *MessageSet) Contains(id uint64) bool {
-	// s.mu.RLock()
-	// defer s.mu.RUnlock()
 	_, found := s.Set[id]
 	return s.EarliestUnseen > id || found
 }
 
-//func (s *MessageSet) Remove(id uint64) {
-//	delete(s.set, id)
-//}
-
 func (s *MessageSet) size() int {
-	// s.mu.RLock()
-	// defer s.mu.RUnlock()
 	return len(s.Set)
 }

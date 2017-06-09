@@ -1,5 +1,6 @@
 package main
 
+// NO LONGER USED
 import (
 	"bufio"
 	"bytes"
@@ -22,8 +23,7 @@ type httphandler struct {
 }
 
 func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	id := r.RequestURI
-	id = strings.TrimPrefix(id, "/")
+
 	switch {
 	case r.Method == "PUT":
 		v, err := ioutil.ReadAll(r.Body)

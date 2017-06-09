@@ -7,9 +7,9 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -27,7 +27,6 @@ type stats struct {
 }
 
 func main() {
-	//numberClients := 50
 	numberClientsP := flag.Int("clients", 50, "Amount of clients to run")
 	tmP := flag.Int("time", 10, "Time which the clients should run")
 	oneP := flag.Bool("one", false, "set to true if you want to send only one req")
@@ -46,16 +45,23 @@ func main() {
 	defer close(wait)
 	for client := 1; client <= numberClients; client++ {
 		//fmt.Printf("new client %v \n", client)
-		retPort := client + 40005
+		// retPort := client + 40005
+		retPort := getPort()
 		destPort := destPrefix + (client%3)*1000
 		go newClient(destPort, retPort, t, wait, one)
 	}
 	var totalDuration time.Duration
 	var req int
+	// var mean time.Duration
 	for i := 1; i <= numberClients; i++ {
 		stat := <-wait
 		req += stat.requests
 		totalDuration += stat.total
+		if stat.requests == 0 {
+			fmt.Print("no requests")
+		} else {
+			fmt.Printf("average time was %v\n", stat.total/time.Duration(stat.requests))
+		}
 	}
 	fmt.Printf("the total number of request was %v during %v with an total duration %v time for all clients\n", req, t, totalDuration)
 }
@@ -76,7 +82,7 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq 
 	for {
 		select {
 		case <-timeout:
-			fmt.Printf("finished %v requests in  %v time \n", numReq, totalDuration)
+			// fmt.Printf("finished %v requests in  %v time \n", numReq, totalDuration)
 			end <- stats{totalDuration, numReq}
 			break
 		case receiveTime, open := <-ok:
@@ -96,11 +102,16 @@ func newClient(destPort, retPort int, t time.Duration, end chan<- stats, oneReq 
 				key := strconv.Itoa(numReq)
 				value := strconv.Itoa(rand.Int())
 				sendTime = time.Now()
-				fmt.Printf("%v sending  \n ", retPort)
+				// fmt.Printf("%v sending  \n ", retPort)
 				sendRequest(put, key, value, destAddr, returnAddr)
 			} else {
 				fmt.Println("terminiating client " + strconv.Itoa(retPort))
-				end <- stats{totalDuration / time.Duration(numReq), numReq}
+				if numReq != 0 {
+					end <- stats{totalDuration / time.Duration(numReq), numReq}
+				} else {
+					end <- stats{}
+					fmt.Println("No request answered")
+				}
 				return
 			}
 		}
@@ -114,10 +125,7 @@ func sendRequest(method, key, value, destAddr, returnAddr string) {
 		_, err := client.Do(req)
 		if err != nil {
 			fmt.Println(err)
-		} else {
-			// fmt.Println(r.Body)
 		}
-		// fmt.Println("sending to " + destAddr)
 	} else {
 		resp, err := http.Get(destAddr + "/" + key)
 		if err != nil {
@@ -149,9 +157,6 @@ func createListener(port int, ok chan<- time.Time) {
 
 //Listens to the responses of the kv store
 func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	id := r.RequestURI
-	id = strings.TrimPrefix(id, "/")
-	// fmt.Println("recieved ok at " + strconv.Itoa(h.id))
 	switch {
 	case r.Method == put:
 		s, err := ioutil.ReadAll(r.Body)
@@ -166,4 +171,19 @@ func (h *httphandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 
 	}
+}
+
+//returns an unused port
+func getPort() int {
+	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
+	if err != nil {
+		panic(err)
+	}
+
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		panic(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }
